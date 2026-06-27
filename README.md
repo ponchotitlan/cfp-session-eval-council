@@ -2,7 +2,7 @@
 <div align="center">A Multi-Agent Conference CFP (Call for Papers) Session Evaluator</div>
 </br>
 <div align="center">
-<img src="images/cfp-session-eval-council_banner.png"/>
+<img src="images/cfp-verdict.png"/>
 </div>
 
 ---
@@ -98,32 +98,48 @@ docker compose down
 
 </br>
 <div align="center">
-<img src="images/cfp_session_eval_council_01_config.gif"/>
+<img src="images/cfp-setup.png"/>
 </div>
 </br>
 
 
 3. Provide your session's title and abstract, the conference URL and the CfP (Call For Papers) URL. Then Click **⚡ RUN EVALUATION**.
+
+</br>
+<div align="center">
+<img src="images/cfp-main.png"/>
+</div>
+</br>
+</br>
+<div align="center">
+<img src="images/cfp-eval.png"/>
+</div>
+</br>
+
 > If the `analyser` agent cannot fetch the information from the CfP URL, it will prompt you for manual copying/pasting of the CfP details.
 
 </br>
 <div align="center">
-<img src="images/cfp_session_eval_council_02_run.gif"/>
+<img src="images/cfp-details-manual.png"/>
 </div>
 </br>
-
 
 4. Once the agents have gathered their conclusions, they will be displayed on each card, along with the Committee Score and Attendee Score.
 
 </br>
 <div align="center">
-<img src="images/cfp-session-eval-council_card.png"/>
-<img src="images/cfp-session-eval-council_synthesis.png"/>
-<img src="images/cfp-session-eval-council_suggestions.png"/>
-</div>
-</br>
+<img src="images/cfp-agent-ethos.png"/></br></br>
+<img src="images/cfp-agent-verdict.png"/></div>
 
-5. You can download a summary by clicking **↓ EXPORT AS .MD**, start again with for a new conference with **← EVALUATE ANOTHER SESSION**, or submit a new session for the same conference by clicking **↩ Try Another Session for This Event**.
+5. The section at the bottom of the page will display the global synthesis and recommendations based on the individual verdicts of all the agents of the council.
+
+</br>
+<div align="center">
+<img src="images/cfp-global-verdict.png"/></br></br>
+<img src="images/cfp-conclusions.png"/></br>
+</div>
+
+6. You can download a summary by clicking **↓ EXPORT AS .MD**, start again with for a new conference with **← EVALUATE ANOTHER SESSION**, or submit a new session for the same conference by clicking **↩ Try Another Session for This Event**.
 
 
 ### Re-evaluating Another Session for the Same Event
@@ -132,7 +148,7 @@ Once you have results, you can click **↩ Try Another Session for This Event**.
 
 </br>
 <div align="center">
-<img src="images/cfp-session-eval-council_suggestions_resubmit.png"/>
+<img src="images/cfp-try-again.png"/>
 </div>
 </br>
 

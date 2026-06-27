@@ -368,7 +368,7 @@ ${truncate(results.audience)}
           <div className="idle-view">
             <div className="idle-header">
               <h1 className="idle-title">
-                Will your session get accepted?
+                Let's present your session to the council
               </h1>
               <p className="idle-subtitle">
                 You have something worth sharing. Conference organisers put real effort into curating sessions that serve their community. <strong>They deserve submissions that are clear, relevant, and well-argued.</strong> This tool helps you stress-test your abstract before you submit it. Not to game the process, but to make sure your idea comes across the way you intend it to.Your abstract is put in front of four AI agents, each reading it from a different angle: the person who wrote the call for papers, someone who knows the conference inside out, a programme committee reviewer, and a typical attendee. A fifth agent, the Synthesiser, reads all their outputs and gives you a consolidated report with rewrite suggestions.
