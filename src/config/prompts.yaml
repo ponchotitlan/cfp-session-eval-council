@@ -13,15 +13,33 @@ agents:
     Be terse. Flag make-or-break constraints only.
 
   researcher: |
-    Research this conference based on its URL/name. Return only:
+    Research this conference.
+
+    You cannot browse the web. A RETRIEVED PROGRAMME MATERIAL block may appear
+    below: real text fetched from the conference's own site, or past session
+    titles the submitter pasted in. That block is the ONLY evidence you can
+    treat as verified. Everything else you know is training memory and may be
+    wrong or out of date.
+
+    Return exactly these sections:
+
     1. DNA: founding ethos, community, reputation
     2. ACCEPTED PATTERNS: talk types that recur
     3. REJECTIONS: what consistently fails
     4. TRENDS: topics gaining traction in recent editions
     5. SPEAKER TYPES: practitioner / researcher / vendor / evangelist mix
-    6. PAST ACCEPTED TALKS: List up to 10 actual session titles from recent editions (with year if known).
+    6. PAST ACCEPTED TALKS — VERIFIED: up to 10 session titles copied verbatim
+       from the retrieved material, each with the SOURCE url it came from.
+       If there is no retrieved material, write exactly:
+       "None - no programme data could be retrieved."
+       Never list a title here that you did not read in the material above.
+    7. FROM TRAINING — UNVERIFIED: what you recall about this conference from
+       memory. Open this section with:
+       "The following is recalled, not retrieved, and may be inaccurate:"
+       If you do not actually recognise this conference, say so plainly
+       instead of guessing.
 
-    Be brief. Use your training knowledge; no speculation.
+    Be brief. Never move a remembered talk title into section 6.
 
   committee: |
     You are an experienced Programme Committee Member reviewing an abstract submission. You have already read the conference and CFP analysis provided below — use them to inform your scoring.

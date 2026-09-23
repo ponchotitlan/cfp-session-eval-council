@@ -111,7 +111,7 @@ The proxy validates that an API key is present in the `x-user-api-key` header be
 | Phase | What the user sees |
 |---|---|
 | 🟡 `idle` | Input form (title, abstract, event URL, CFP URL) |
-| 🟢 `running` | Per-agent progress cards, countdown timer, optional CFP paste fallback |
+| 🟢 `running` | Per-agent progress cards, backoff countdown (only when rate limited or a delay is configured), optional CFP paste fallback |
 | 🔵 `done` | Score cards, all agent reports, synthesis, export/reset buttons |
 | 🟠 `resubmit` | Minimal form for a new title + abstract; agents 3 & 4 re-run, agents 1 & 2 are reused |
 
@@ -119,7 +119,43 @@ The proxy validates that an API key is present in the `x-user-api-key` header be
 
 ## 🤖 Agent Pipeline
 
-Agents run **sequentially** with a configurable delay between each call (`config.agentDelay`, default 15 s) to respect provider rate limits.
+Agents run in **dependency waves**. The CFP Analyser and Conference Researcher take only the session context, so they
+are dispatched **concurrently**; the Programme Committee and Audience agents consume their output and so stay sequential,
+as does the final synthesis. Adding an agent to `INDEPENDENT_AGENT_IDS` in `src/App.jsx` puts it in the concurrent wave —
+only do that for an agent whose prompt needs nothing but the session context.
+
+### Conference research (deterministic retrieval)
+
+Before the Conference Researcher is prompted, the proxy fetches the conference's own programme pages
+(`POST /api/research` → `proxy/research.js`). This is a plain HTTP fetch: no LLM, no API key, no third-party
+service, nothing billed. It ranks links from the event page for programme/archive likelihood, extracts the top
+few, and returns a digest capped at ~12k characters with a source URL per section.
+
+It is best-effort and honest about failing. Static sites (FOSDEM, All Things Open) succeed; JavaScript-rendered
+programmes (Cisco Live) and bot-blocked hosts (sched.com, HTTP 403) do not. Failure is detected on *extracted
+content*, not HTTP status — a JS shell returns 200 with almost nothing — via `MIN_DIGEST_CHARS` /
+`MIN_TITLE_LINES` in `proxy/research.js`.
+
+When retrieval fails, the UI asks the submitter to paste a few past session titles and re-runs the Researcher
+with them, mirroring the existing CFP-paste fallback. Skipping is allowed: the Researcher then answers from
+training memory, and its prompt requires that to be reported under `FROM TRAINING — UNVERIFIED`, separate from
+`PAST ACCEPTED TALKS — VERIFIED`, which may only contain titles read from retrieved material.
+
+Guardrails: whole-operation budget `TOTAL_BUDGET_MS` (18s) on top of per-request timeouts, at most 3 pages,
+a descriptive User-Agent, a politeness delay, and a minimal `robots.txt` check that fails open.
+
+> **Why the Researcher is safe to parallelise:** it works from the conference URL and its own training knowledge and never
+> reads the CFP text. If the Analyser reports it could not fetch the CFP and the user pastes the text in, the session
+> context is rebuilt and only the Analyser re-runs — the Researcher's result is unaffected.
+
+> **Resubmit flow:** the Committee and Audience agents read the *preserved* Analyser/Researcher output, which is already
+> available before either starts. They therefore have no dependency on each other and run **concurrently** — the whole
+> resubmit is two waves (Committee + Audience, then synthesis) rather than the first run's three.
+
+Rate limits are handled *reactively* rather than
+pre-emptively: the proxy retries a 429 up to `MAX_RETRIES` times via the AI SDK, and any 429 that still surfaces is
+retried client-side (`callWithRetry`) using the provider's `Retry-After` value, falling back to exponential backoff.
+`config.agentDelay` adds an optional fixed gap between agents and defaults to **0**.
 
 ```
 1. CFP Analyser [🔍]      ── reads CFP URL, extracts themes/rules/signals
@@ -155,7 +191,7 @@ Default config (`src/lib/utils.js` + `src/config/models.js`):
 {
   provider: "anthropic",
   apiKey: "",
-  agentDelay: 15,        // seconds between agent calls
+  agentDelay: 0,         // optional extra seconds between agent calls (0 = off)
   model: "claude-sonnet-4-6"
 }
 ```

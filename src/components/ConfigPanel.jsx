@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { PROVIDERS, MODELS, DEFAULT_MODELS } from "../config/models";
 
-const MIN_DELAY_SECONDS = 10;
+const MIN_DELAY_SECONDS = 0;
 
 const GEAR_PATH = "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z";
 
@@ -30,7 +30,7 @@ export function GearIcon({ size = 16, color = "#6B7280", className = "gear-icon"
 
 /**
  * Modal settings panel for configuring the LLM provider, per-provider API keys,
- * model selection, and the inter-agent delay.
+ * model selection, and the optional inter-agent delay.
  *
  * Edits are kept in a local draft state until the user clicks "SAVE SETTINGS",
  * at which point the validated config is passed to the parent via `onSave`.
@@ -50,7 +50,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
       ...(config.apiKeys || {}),
     },
     model: config.model || DEFAULT_MODELS[config.provider || "anthropic"],
-    agentDelay: config.agentDelay ?? 15,
+    agentDelay: config.agentDelay ?? 0,
     ...config,
   }));
   const [showKey, setShowKey] = useState(false);
@@ -60,7 +60,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
   const activeProvider = PROVIDERS.find((p) => p.id === draft.provider) || PROVIDERS[0];
   const providerModels = MODELS[draft.provider] || [];
 
-  const delayTipText = `Most LLM providers enforce per-minute token or request rate limits. A delay of at least ${MIN_DELAY_SECONDS}s between agents prevents "rate limit exceeded" errors. Longer delays = more headroom; 15s is the recommended default.`;
+  const delayTipText = "Agents run one at a time, and rate-limit errors are retried automatically using the delay the provider asks for. Leave this at 0 unless your provider has a very low requests-per-minute ceiling (for example the Gemini free tier), in which case 10-15s adds headroom at the cost of a slower run.";
 
   const handleProviderChange = (providerId) => {
     setDraft((prev) => ({
@@ -73,7 +73,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
   const handleSave = () => {
     const d = parseInt(draft.agentDelay, 10);
     if (isNaN(d) || d < MIN_DELAY_SECONDS) {
-      setDelayError(`Minimum is ${MIN_DELAY_SECONDS} seconds.`);
+      setDelayError(`Must be ${MIN_DELAY_SECONDS} seconds or more.`);
       return;
     }
     const currentApiKey = (draft.apiKeys || {})[draft.provider] || "";
@@ -83,6 +83,9 @@ export default function ConfigPanel({ config, onSave, onClose }) {
       apiKeys: draft.apiKeys,
       model: draft.model,
       agentDelay: d,
+      // Preserve the migration flag so a deliberately-chosen delay is not
+      // reset to 0 the next time the app loads.
+      delayMigrated: true,
     });
   };
 
@@ -174,7 +177,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
           <div>
             <div className="delay-label-row">
               <label className="config-label" style={{ margin: 0 }}>
-                DELAY BETWEEN AGENTS (seconds)
+                EXTRA DELAY BETWEEN AGENTS (seconds)
               </label>
               <span
                 onMouseEnter={() => setShowDelayTip(true)}
@@ -189,7 +192,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 i
                 {showDelayTip && (
                   <div className="info-tooltip">
-                    <div className="info-tooltip-title">WHY IS THIS NECESSARY?</div>
+                    <div className="info-tooltip-title">DO I NEED THIS?</div>
                     {delayTipText}
                     <div className="info-tooltip-arrow" />
                   </div>
@@ -205,7 +208,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 className="config-input"
                 style={{ width: 100 }}
               />
-              <span className="delay-hint">min {MIN_DELAY_SECONDS}s · recommended 15s</span>
+              <span className="delay-hint">0 = off · raise only if rate limited</span>
             </div>
             {delayError && <div className="delay-error">{delayError}</div>}
           </div>

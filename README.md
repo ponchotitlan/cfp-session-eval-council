@@ -92,7 +92,15 @@ docker compose down
 
 2. Click on the **⚙ Settings** panel and setup your LLM API key. This key is stored in your browser's `localStorage`. It is never persisted on the server.
 
-> You can also adjust the delay between agent calls. This delay is required to avoid issues with the LLM API due to several requests from the same call, one after the other.
+> **Conference research is fetched, not remembered.** Before the Conference Researcher runs, the proxy fetches
+> the conference's own programme pages and hands the Researcher the real text, with source URLs. This uses no
+> API key and no paid service. If the pages can't be read — JavaScript-rendered programmes, or sites that block
+> automated requests — you'll be asked to paste a few past session titles instead. Skip that and the Researcher
+> falls back on training memory, clearly separated in its report under `FROM TRAINING — UNVERIFIED`.
+
+> You can also set an extra delay between agent calls. It defaults to **0**: agents already run one at a time, and
+> rate-limit (HTTP 429) responses are retried automatically using the delay the provider asks for in its `Retry-After`
+> header. Only raise it if your provider has a very low requests-per-minute ceiling — the Gemini free tier, for example.
 
 > Currently supported LLM providers are [Anthropic 🔷](https://console.anthropic.com/settings/keys), [OpenAI 🟢](https://platform.openai.com/api-keys) and [Google Gemini 🔴](https://aistudio.google.com/apikey).
 

@@ -7,8 +7,56 @@ import { generateText } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { researchConference } from "./research.js";
 
 const PORT = 3001;
+
+// How many times the AI SDK retries a retryable failure (429 / 5xx / network)
+// before the error reaches us. Retries use exponential backoff and honour the
+// provider's Retry-After header where one is sent.
+const MAX_RETRIES = 4;
+
+// ─── Rate-limit helpers ───────────────────────────────────────────────────────
+
+/**
+ * Extract the HTTP status code from an AI SDK provider error.
+ * Different providers surface it under different property names.
+ */
+export function statusOf(err) {
+  return err?.statusCode ?? err?.status ?? err?.response?.status ?? null;
+}
+
+/**
+ * Parse a Retry-After value into seconds.
+ * Providers send either a delta in seconds ("20") or an HTTP date.
+ * Returns null when the value is absent or unparseable.
+ */
+export function parseRetryAfter(value) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds));
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+/**
+ * Pull the provider's suggested retry delay (in seconds) off a rate-limit error.
+ * Checks `retry-after-ms` first since it is more precise, then `retry-after`.
+ */
+export function retryAfterSeconds(err) {
+  const headers = err?.responseHeaders ?? err?.response?.headers ?? {};
+  const get = (name) =>
+    typeof headers.get === "function" ? headers.get(name) : headers[name];
+
+  const rawMs = get("retry-after-ms");
+  if (rawMs) {
+    const ms = Number(rawMs);
+    if (Number.isFinite(ms)) return Math.max(0, Math.ceil(ms / 1000));
+  }
+
+  return parseRetryAfter(get("retry-after"));
+}
 
 // ─── Provider factory ─────────────────────────────────────────────────────────
 
@@ -34,6 +82,43 @@ const server = http.createServer((req, res) => {
       "Access-Control-Allow-Headers": "Content-Type, x-user-api-key",
     });
     res.end();
+    return;
+  }
+
+  const json = (status, body) => {
+    res.writeHead(status, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
+    res.end(JSON.stringify(body));
+  };
+
+  // Deterministic conference research. No API key needed — this fetches
+  // public pages directly and never calls a model.
+  if (req.method === "POST" && req.url === "/api/research") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      let eventUrl;
+      try {
+        ({ eventUrl } = JSON.parse(raw));
+      } catch {
+        return json(400, { error: { message: "Invalid JSON body." } });
+      }
+      try {
+        json(200, await researchConference(eventUrl));
+      } catch (err) {
+        // Retrieval is best-effort: report the failure as a normal negative
+        // result so the caller falls back to asking the user.
+        json(200, {
+          ok: false,
+          digest: "",
+          sources: [],
+          reason: `retrieval failed (${err.message || err})`,
+          stats: {},
+        });
+      }
+    });
     return;
   }
 
@@ -68,6 +153,7 @@ const server = http.createServer((req, res) => {
         system,
         messages,
         maxTokens: max_tokens || 1000,
+        maxRetries: MAX_RETRIES,
       });
       res.writeHead(200, {
         "Content-Type": "application/json",
@@ -75,12 +161,22 @@ const server = http.createServer((req, res) => {
       });
       res.end(JSON.stringify({ text }));
     } catch (err) {
-      const status = err.status || 502;
+      // Only reached once the SDK has exhausted MAX_RETRIES.
+      const status = statusOf(err) || 502;
+      const body = { error: { message: err.message || String(err) } };
+
+      // Surface the provider's own backoff hint so the client can wait the
+      // right amount of time instead of guessing.
+      if (status === 429) {
+        const retryAfter = retryAfterSeconds(err);
+        if (retryAfter != null) body.error.retryAfter = retryAfter;
+      }
+
       res.writeHead(status >= 400 && status < 600 ? status : 502, {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       });
-      res.end(JSON.stringify({ error: { message: err.message || String(err) } }));
+      res.end(JSON.stringify(body));
     }
   });
 });

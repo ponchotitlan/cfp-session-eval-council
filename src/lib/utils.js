@@ -5,7 +5,10 @@
 export const DEFAULT_CONFIG = {
   provider: "anthropic",
   apiKey: "",
-  agentDelay: 15,
+  // Optional pre-emptive pause between agent calls. Defaults to 0: agents run
+  // sequentially and rate-limit errors are retried automatically, so a fixed
+  // delay is only useful on providers with very low request-per-minute limits.
+  agentDelay: 0,
 };
 
 // Heuristic to detect if the analyser likely failed to access the CFP URL and needs the user to paste the text instead

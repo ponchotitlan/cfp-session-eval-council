@@ -9,6 +9,7 @@ import { AGENTS, SYNTHESISER_PROMPT } from "./config/agents";
 import { DEFAULT_MODELS } from "./config/models";
 import { callLLM } from "./lib/llm";
 import { DEFAULT_CONFIG, analyserCouldNotAccess, extractScore } from "./lib/utils";
+import { fetchResearch, researchBlock } from "./lib/research";
 
 // CSS styles
 import "./App.css";
@@ -20,6 +21,56 @@ import ScoreCard from "./components/ScoreCard";
 import AgentReport from "./components/AgentReport";
 
 const APP_DEFAULT_CONFIG = { ...DEFAULT_CONFIG, model: DEFAULT_MODELS.anthropic };
+
+// Agents whose only input is the session context. They have no upstream
+// dependency on each other, so they are dispatched concurrently.
+const INDEPENDENT_AGENT_IDS = ["analyser", "researcher"];
+
+// Client-side retries for a 429 that survived the proxy's own retries.
+const MAX_RATE_LIMIT_RETRIES = 3;
+// Fallback backoff (seconds) when the provider sends no Retry-After header.
+const RATE_LIMIT_BACKOFF_SECONDS = [5, 15, 30];
+
+// Status line for the agents currently in flight. Names them all, since more
+// than one runs at a time.
+const runningLabel = (ids) => {
+  const active = AGENTS.filter((a) => ids.includes(a.id));
+  if (active.length === 0) return "Preparing agents...";
+  if (active.length === 1) return `${active[0].icon} ${active[0].label} is analysing...`;
+  return `${active.map((a) => a.icon).join(" ")} ${active
+    .map((a) => a.label)
+    .join(" and ")} are analysing in parallel...`;
+};
+
+/**
+ * Assembles the user message for one agent: the session context, plus the
+ * output of the upstream agents that agent is meant to read.
+ *
+ * Shared by the first run and the resubmit so the two cannot drift — they
+ * previously had separate copies, and the Audience agent ended up reading the
+ * CFP analysis on a resubmit but the conference research on a first run.
+ *
+ * An upstream section is omitted entirely when that agent produced no result,
+ * so a failed agent's error text is never fed to a downstream agent.
+ */
+const buildAgentMessage = (agentId, sessionContext, results, retrieved = "") => {
+  const sections = [sessionContext];
+  if (agentId === "researcher" && retrieved) sections.push(retrieved);
+  if (agentId === "committee" || agentId === "audience") {
+    if (results.researcher) sections.push(`CONFERENCE ANALYSIS:\n${results.researcher}`);
+  }
+  if (agentId === "committee") {
+    if (results.analyser) sections.push(`CFP ANALYSIS:\n${results.analyser}`);
+  }
+  return sections.join("\n\n---\n");
+};
+
+// Shown in place of the synthesis when every evaluator agent failed. Writing
+// this into `synthesis` (rather than `error`) is what surfaces it, because the
+// error banner only renders on the input screens, not the results screen.
+const SYNTHESIS_UNAVAILABLE =
+  "⚠️ **No synthesis could be produced.** Both evaluator agents failed, so there was nothing to synthesise. " +
+  "See the agent reports below for the underlying error, then try again.";
 
 /**
  * Root application component. Manages the full evaluation lifecycle:
@@ -35,24 +86,41 @@ export default function SessionEvaluator() {
   const [cfpUrl, setCfpUrl] = useState("");
   const [cfpText, setCfpText] = useState("");
   const [needsCfpText, setNeedsCfpText] = useState(false);
+  // Deterministic programme retrieval, and the user's pasted fallback for it.
+  const [research, setResearch] = useState(null);
+  const [needsPastTalks, setNeedsPastTalks] = useState(false);
+  const [pastTalksDraft, setPastTalksDraft] = useState("");
   const [phase, setPhase] = useState("idle"); // idle | running | done | resubmit
   const [agentResults, setAgentResults] = useState({});
   const [synthesis, setSynthesis] = useState("");
-  const [activeAgent, setActiveAgent] = useState(null);
+  // Ids of the agents currently in flight. A list, not a single id, because
+  // the independent agents run concurrently.
+  const [activeAgents, setActiveAgents] = useState([]);
   const [agentProgress, setAgentProgress] = useState([]);
   const [error, setError] = useState("");
   const [countdown, setCountdown] = useState(0);
+  const [countdownTotal, setCountdownTotal] = useState(0);
+  const [countdownLabel, setCountdownLabel] = useState("");
   const [resubmitTitle, setResubmitTitle] = useState("");
   const [resubmitAbstract, setResubmitAbstract] = useState("");
   const resultsRef = useRef(null);
   const cfpTextResolverRef = useRef(null);
+  const pastTalksResolverRef = useRef(null);
 
   // Load config from localStorage or use defaults
   const [config, setConfig] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("cfp-session-eval-council-config") || "{}");
-      return { ...APP_DEFAULT_CONFIG, ...saved };
-    } catch { return APP_DEFAULT_CONFIG; }
+      const merged = { ...APP_DEFAULT_CONFIG, ...saved };
+      // One-time migration: the old build shipped a mandatory 15s inter-agent
+      // delay. Rate limits are now handled by retrying, so clear the inherited
+      // default once. A delay the user sets deliberately after this is kept.
+      if (!saved.delayMigrated) {
+        if (merged.agentDelay === 15) merged.agentDelay = 0;
+        merged.delayMigrated = true;
+      }
+      return merged;
+    } catch { return { ...APP_DEFAULT_CONFIG, delayMigrated: true }; }
   });
   const [configOpen, setConfigOpen] = useState(false);
 
@@ -110,19 +178,102 @@ export default function SessionEvaluator() {
     cfpTextResolverRef.current = null;
   };
 
-  // Utility function to create a countdown timer for rate-limiting between agent calls. Updates the `countdown` state every second and resolves after the specified time.
-  const sleepWithCountdown = async (ms) => {
-    const seconds = Math.ceil(ms / 1000);
-    for (let i = seconds; i > 0; i--) {
+  // Pauses for the user to paste past session titles when deterministic
+  // retrieval came back empty. Mirrors the CFP paste fallback above.
+  const waitForPastTalks = () =>
+    new Promise((resolve) => {
+      setNeedsPastTalks(true);
+      pastTalksResolverRef.current = resolve;
+    });
+
+  const submitPastTalks = (text) => {
+    setNeedsPastTalks(false);
+    pastTalksResolverRef.current?.(text);
+    pastTalksResolverRef.current = null;
+  };
+
+  // Counts down visibly for `seconds`, showing `label` above the timer.
+  // Used for rate-limit backoff waits and, when configured, the optional
+  // pre-emptive gap between agents.
+  const sleepWithCountdown = async (seconds, label) => {
+    const total = Math.ceil(seconds);
+    if (total <= 0) return;
+    setCountdownTotal(total);
+    setCountdownLabel(label);
+    for (let i = total; i > 0; i--) {
       setCountdown(i);
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     setCountdown(0);
+    setCountdownLabel("");
   };
+
+  // Optional pre-emptive gap between agents. Defaults to 0 — the proxy retries
+  // rate-limit errors on its own, so this is only needed on providers with
+  // very low request-per-minute ceilings (e.g. the Gemini free tier).
+  const interAgentDelay = () =>
+    sleepWithCountdown(Number(config.agentDelay) || 0, "NEXT AGENT IN");
 
   // Wrapper around the callLLM function that automatically includes the current config and allows overriding maxTokens.
   const callLLMWithConfig = (systemPrompt, userMessage, maxTokens = 1000) =>
     callLLM(config, systemPrompt, userMessage, maxTokens);
+
+  // Calls the model, reacting to rate limits instead of pre-empting them.
+  // The proxy has already retried internally; if a 429 still surfaces we wait
+  // the provider's own suggested delay (falling back to exponential backoff)
+  // and try again. Non-rate-limit errors propagate immediately.
+  const callWithRetry = async (systemPrompt, userMessage, maxTokens = 1000) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await callLLMWithConfig(systemPrompt, userMessage, maxTokens);
+      } catch (e) {
+        if (!e?.isRateLimit || attempt >= MAX_RATE_LIMIT_RETRIES) throw e;
+        // Honour the provider's hint, but never retry instantly — a
+        // Retry-After of 0 would otherwise burn all attempts in a tight loop.
+        const wait = Math.max(1, e.retryAfter ?? RATE_LIMIT_BACKOFF_SECONDS[attempt]);
+        await sleepWithCountdown(wait, "RATE LIMITED — RETRYING IN");
+      }
+    }
+  };
+
+  // Dispatches `agents` concurrently and records each outcome once all have
+  // settled. Pass a single agent to run it on its own. Uses allSettled rather
+  // than all so that one agent failing never cancels or orphans its peers.
+  //
+  // A successful result goes into `results` (and so into downstream prompts);
+  // a failure is shown on the agent's card but deliberately kept out of
+  // `results`, so an error string is never fed to another agent.
+  const runAgents = async (agents, results, buildMessage) => {
+    setActiveAgents(agents.map((a) => a.id));
+
+    // Each agent's card flips to "Complete" the moment that agent finishes,
+    // rather than when the whole wave does.
+    const record = (agent, text, errored) => {
+      if (errored) {
+        delete results[agent.id];
+      } else {
+        results[agent.id] = text;
+      }
+      setAgentResults((prev) => ({ ...prev, [agent.id]: text }));
+      setAgentProgress((prev) => [...prev, agent.id]);
+      setActiveAgents((prev) => prev.filter((id) => id !== agent.id));
+    };
+
+    // Every promise carries its own catch, so none of them reject and one
+    // agent failing can never cancel or orphan a peer running alongside it.
+    await Promise.all(
+      agents.map((agent) =>
+        // buildMessage may be async (the researcher awaits retrieval first).
+        // Resolving it inside each agent's own chain keeps the wave parallel.
+        Promise.resolve(buildMessage(agent.id))
+          .then((message) => callWithRetry(agent.role, message))
+          .then((text) => record(agent, text, false))
+          .catch((e) =>
+            record(agent, `⚠️ Agent encountered an error: ${e?.message ?? e}`, true),
+          ),
+      ),
+    );
+  };
 
   // Main function to run the full evaluation lifecycle: validates input, iterates through agents with appropriate delays, handles CFP text fallback, and compiles the final synthesis.
   const runEvaluation = async () => {
@@ -152,73 +303,106 @@ ${extraText.trim() ? `\nCALL FOR PAPERS TEXT:\n${extraText.trim()}` : ""}
 
     let sessionContext = buildContext(cfpText);
 
+    // Successful agent output only. A failed agent is left absent here so its
+    // error message is never interpolated into a downstream prompt.
     const results = {};
 
-    const buildAgentMessage = (agentId) => {
-      if (agentId === "committee") {
-        return `${sessionContext}\n\n---\nCONFERENCE ANALYSIS:\n${results.researcher}\n\n---\nCFP ANALYSIS:\n${results.analyser}`;
+    // Deterministic programme retrieval and its pasted fallback. Held in
+    // locals (not state) because the message builder reads them synchronously
+    // during a wave, where a state update would not yet be visible.
+    let researchResult = null;
+    let pastTalks = "";
+
+    // Reads `sessionContext` at call time, so the CFP-paste fallback's rebuild
+    // is picked up by the agents that run after it. Async for the researcher,
+    // which fetches the conference programme before it can be prompted; the
+    // await happens inside that agent's own chain, so the analyser running
+    // alongside it is not held up.
+    const buildMessage = async (agentId) => {
+      if (agentId !== "researcher") {
+        return buildAgentMessage(agentId, sessionContext, results);
       }
-      if (agentId === "audience") {
-        return `${sessionContext}\n\n---\nCONFERENCE ANALYSIS:\n${results.researcher}`;
+      if (researchResult === null) {
+        researchResult = await fetchResearch(eventUrl);
+        setResearch(researchResult);
       }
-      return sessionContext;
+      const retrieved = researchBlock({ research: researchResult, pastTalks });
+      return buildAgentMessage(agentId, sessionContext, results, retrieved);
     };
 
-    for (const [index, agent] of AGENTS.entries()) {
-      if (index > 0) await sleepWithCountdown(config.agentDelay * 1000);
-      setActiveAgent(agent.id);
-      try {
-        const result = await callLLMWithConfig(agent.role, buildAgentMessage(agent.id));
-        results[agent.id] = result;
-        setAgentResults((prev) => ({ ...prev, [agent.id]: result }));
-        setAgentProgress((prev) => [...prev, agent.id]);
+    // Wave 1 — the analyser and researcher read nothing but the session
+    // context, so they run concurrently. The researcher works from the
+    // conference URL and its own knowledge and never reads the CFP text, so
+    // it is unaffected by a later CFP-paste fallback rebuilding the context.
+    const independent = AGENTS.filter((a) => INDEPENDENT_AGENT_IDS.includes(a.id));
+    await runAgents(independent, results, buildMessage);
 
-        // After analyser: if it couldn't read the CFP URL, pause and ask user to paste the text
-        if (agent.id === "analyser" && analyserCouldNotAccess(result)) {
-          const pastedText = await waitForCfpText();
-          // Rebuild context with the pasted text and re-run the analyser
-          sessionContext = buildContext(pastedText);
-          // Reset analyser card to "active" state before retrying
-          setAgentProgress((prev) => prev.filter((id) => id !== "analyser"));
-          setActiveAgent("analyser");
-          await sleepWithCountdown(config.agentDelay * 1000); // respect rate limit before retry
-          const retryResult = await callLLMWithConfig(agent.role, buildAgentMessage(agent.id));
-          results[agent.id] = retryResult;
-          setAgentResults((prev) => ({ ...prev, [agent.id]: retryResult }));
-          setAgentProgress((prev) => [...prev, "analyser"]);
-        }
-      } catch (e) {
-        results[agent.id] = `⚠️ Agent encountered an error: ${e.message}`;
-        setAgentResults((prev) => ({ ...prev, [agent.id]: results[agent.id] }));
-        setAgentProgress((prev) => [...prev, agent.id]);
+    // If the analyser couldn't read the CFP URL, pause for a paste and re-run
+    // it alone. The researcher's result stands — it never used the CFP text.
+    if (results.analyser && analyserCouldNotAccess(results.analyser)) {
+      const pastedText = await waitForCfpText();
+      sessionContext = buildContext(pastedText);
+      // Reset the analyser card to "active" before retrying
+      setAgentProgress((prev) => prev.filter((id) => id !== "analyser"));
+      const analyser = AGENTS.find((a) => a.id === "analyser");
+      await runAgents([analyser], results, buildMessage);
+    }
+
+    // Retrieval found nothing usable (JS-rendered programme, bot-block, no
+    // event URL). Offer the user a chance to supply real examples, then re-run
+    // the researcher with them. Skipping leaves the unverified result as-is.
+    if (results.researcher && !researchResult?.ok) {
+      const pasted = await waitForPastTalks();
+      if (pasted.trim()) {
+        pastTalks = pasted;
+        setAgentProgress((prev) => prev.filter((id) => id !== "researcher"));
+        const researcher = AGENTS.find((a) => a.id === "researcher");
+        await runAgents([researcher], results, buildMessage);
       }
     }
 
-    await sleepWithCountdown(config.agentDelay * 1000); // extra gap before synthesis (largest input call)
-    setActiveAgent("synthesis");
+    // Wave 2 — each of these depends on wave 1's output, so they stay
+    // sequential and are built only after the results above are in.
+    for (const agent of AGENTS.filter((a) => !INDEPENDENT_AGENT_IDS.includes(a.id))) {
+      await interAgentDelay();
+      await runAgents([agent], results, buildMessage);
+    }
+
+    await interAgentDelay();
+    setActiveAgents(["synthesis"]);
+
     const truncate = (text, max = 1200) =>
       text && text.length > max ? text.slice(0, max) + "\n[truncated for brevity]" : text;
-    const synthesisInput = `
+
+    const evaluations = [
+      ["PROGRAMME COMMITTEE EVALUATION", results.committee],
+      ["AUDIENCE MEMBER EVALUATION", results.audience],
+    ].filter(([, text]) => text);
+
+    if (evaluations.length === 0) {
+      // Both evaluators failed — a synthesis here would be invented, not derived.
+      setSynthesis(SYNTHESIS_UNAVAILABLE);
+    } else {
+      const missing = evaluations.length === 1
+        ? "\n\nNOTE: One evaluator agent failed. Base your synthesis only on the evaluation provided above and say so in your answer."
+        : "";
+      const synthesisInput = `
 ORIGINAL SESSION:
 ${sessionContext}
 
 ---
-PROGRAMME COMMITTEE EVALUATION:
-${truncate(results.committee)}
+${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n---\n")}${missing}
+      `.trim();
 
----
-AUDIENCE MEMBER EVALUATION:
-${truncate(results.audience)}
-    `.trim();
-
-    try {
-      const synth = await callLLMWithConfig(SYNTHESISER_PROMPT, synthesisInput, 4096);
-      setSynthesis(synth);
-    } catch (e) {
-      setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
+      try {
+        const synth = await callWithRetry(SYNTHESISER_PROMPT, synthesisInput, 4096);
+        setSynthesis(synth);
+      } catch (e) {
+        setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
+      }
     }
 
-    setActiveAgent(null);
+    setActiveAgents([]);
     setPhase("done");
     setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   };
@@ -229,11 +413,18 @@ ${truncate(results.audience)}
     setAgentResults({});
     setSynthesis("");
     setAgentProgress([]);
-    setActiveAgent(null);
+    setActiveAgents([]);
     setError("");
+    setCountdown(0);
+    setCountdownTotal(0);
+    setCountdownLabel("");
     setCfpText("");
     setNeedsCfpText(false);
     cfpTextResolverRef.current = null;
+    setResearch(null);
+    setNeedsPastTalks(false);
+    setPastTalksDraft("");
+    pastTalksResolverRef.current = null;
   };
 
   // Starts the resubmit flow, which allows the user to enter a new title and abstract for the same event. The CFP analysis and conference research are preserved, and only the Committee and Audience agents will re-run.
@@ -273,57 +464,48 @@ ${cfpText.trim() ? `\nCALL FOR PAPERS TEXT:\n${cfpText.trim()}` : ""}
 
     const results = { analyser: preservedAnalyser, researcher: preservedResearcher };
 
-    const buildMsg = (agentId) => {
-      if (agentId === "committee") {
-        return `${sessionContext}\n\n---\nCONFERENCE ANALYSIS:\n${results.researcher}\n\n---\nCFP ANALYSIS:\n${results.analyser}`;
-      }
-      if (agentId === "audience") {
-        return `${sessionContext}\n\n---\nCONFERENCE OVERVIEW:\n${results.analyser}`;
-      }
-      return sessionContext;
-    };
+    const buildMessage = (agentId) => buildAgentMessage(agentId, sessionContext, results);
 
+    // Both read only the *preserved* analyser/researcher output, which is
+    // already in `results` before either starts — so unlike the first run,
+    // here they have no dependency on each other and go out concurrently.
     const evalAgents = AGENTS.filter((a) => a.id === "committee" || a.id === "audience");
-    for (const [index, agent] of evalAgents.entries()) {
-      if (index > 0) await sleepWithCountdown(config.agentDelay * 1000);
-      setActiveAgent(agent.id);
-      try {
-        const result = await callLLMWithConfig(agent.role, buildMsg(agent.id));
-        results[agent.id] = result;
-        setAgentResults((prev) => ({ ...prev, [agent.id]: result }));
-        setAgentProgress((prev) => [...prev, agent.id]);
-      } catch (e) {
-        results[agent.id] = `⚠️ Agent encountered an error: ${e.message}`;
-        setAgentResults((prev) => ({ ...prev, [agent.id]: results[agent.id] }));
-        setAgentProgress((prev) => [...prev, agent.id]);
-      }
-    }
+    await runAgents(evalAgents, results, buildMessage);
 
-    await sleepWithCountdown(config.agentDelay * 1000);
-    setActiveAgent("synthesis");
+    await interAgentDelay();
+    setActiveAgents(["synthesis"]);
+
     const truncate = (text, max = 1200) =>
       text && text.length > max ? text.slice(0, max) + "\n[truncated for brevity]" : text;
-    const synthesisInput = `
+
+    const evaluations = [
+      ["PROGRAMME COMMITTEE EVALUATION", results.committee],
+      ["AUDIENCE MEMBER EVALUATION", results.audience],
+    ].filter(([, text]) => text);
+
+    if (evaluations.length === 0) {
+      setSynthesis(SYNTHESIS_UNAVAILABLE);
+    } else {
+      const missing = evaluations.length === 1
+        ? "\n\nNOTE: One evaluator agent failed. Base your synthesis only on the evaluation provided above and say so in your answer."
+        : "";
+      const synthesisInput = `
 ORIGINAL SESSION:
 ${sessionContext}
 
 ---
-PROGRAMME COMMITTEE EVALUATION:
-${truncate(results.committee)}
+${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n---\n")}${missing}
+      `.trim();
 
----
-AUDIENCE MEMBER EVALUATION:
-${truncate(results.audience)}
-    `.trim();
-
-    try {
-      const synth = await callLLMWithConfig(SYNTHESISER_PROMPT, synthesisInput, 4096);
-      setSynthesis(synth);
-    } catch (e) {
-      setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
+      try {
+        const synth = await callWithRetry(SYNTHESISER_PROMPT, synthesisInput, 4096);
+        setSynthesis(synth);
+      } catch (e) {
+        setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
+      }
     }
 
-    setActiveAgent(null);
+    setActiveAgents([]);
     setPhase("done");
     setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   };
@@ -345,8 +527,8 @@ ${truncate(results.audience)}
           <div className="agent-dots">
             {AGENTS.map((a) => (
               <div key={a.id} className="agent-dot" style={{
-                background: agentProgress.includes(a.id) || activeAgent === a.id ? a.color : "#1E2030",
-                boxShadow: activeAgent === a.id ? `0 0 8px ${a.color}` : "none",
+                background: agentProgress.includes(a.id) || activeAgents.includes(a.id) ? a.color : "#1E2030",
+                boxShadow: activeAgents.includes(a.id) ? `0 0 8px ${a.color}` : "none",
               }} />
             ))}
           </div>
@@ -446,23 +628,25 @@ ${truncate(results.audience)}
               <div className="running-status-label">EVALUATION IN PROGRESS</div>
               <div className="running-status-title">
                 {countdown > 0
-                  ? "Cooling down between agents..."
-                  : activeAgent === "synthesis"
+                  ? countdownLabel?.startsWith("RATE LIMITED")
+                    ? "Rate limited by the provider — waiting to retry..."
+                    : "Cooling down between agents..."
+                  : activeAgents.includes("synthesis")
                   ? "Synthesising all agent reports..."
-                  : activeAgent
-                  ? `${AGENTS.find((a) => a.id === activeAgent)?.icon} ${AGENTS.find((a) => a.id === activeAgent)?.label} is analysing...`
+                  : activeAgents.length > 0
+                  ? runningLabel(activeAgents)
                   : "Preparing agents..."}
               </div>
               {countdown > 0 && (
                 <div className="countdown-wrapper">
-                  <div className="countdown-label">RATE LIMIT PAUSE — NEXT AGENT IN</div>
+                  <div className="countdown-label">{countdownLabel}</div>
                   <div className="countdown-number"
                     style={{ color: countdown <= 5 ? "#34D399" : "#F59E0B" }}>
                     {countdown}s
                   </div>
                   <div className="countdown-bar-track">
                     <div className="countdown-bar-fill"
-                      style={{ width: `${((15 - countdown) / 15) * 100}%` }} />
+                      style={{ width: `${countdownTotal > 0 ? ((countdownTotal - countdown) / countdownTotal) * 100 : 0}%` }} />
                   </div>
                 </div>
               )}
@@ -500,10 +684,47 @@ ${truncate(results.audience)}
               </div>
             )}
 
+            {/* Past-talks fallback: deterministic retrieval found nothing usable */}
+            {needsPastTalks && (
+              <div className="cfp-fallback">
+                <div className="cfp-fallback-header">
+                  <span className="cfp-fallback-icon">📚</span>
+                  <div>
+                    <div className="cfp-fallback-title">COULDN'T READ THIS CONFERENCE'S PAST PROGRAMME</div>
+                    <div className="cfp-fallback-subtitle">
+                      {research?.reason
+                        ? `Tried fetching the programme pages, but ${research.reason}.`
+                        : "The programme pages could not be read."}{" "}
+                      Paste a few past session titles and the Conference Researcher will use them
+                      as real evidence. Skip and it will fall back on training memory, clearly
+                      marked as unverified.
+                    </div>
+                  </div>
+                </div>
+                <textarea
+                  id="past-talks-input"
+                  value={pastTalksDraft}
+                  onChange={(e) => setPastTalksDraft(e.target.value)}
+                  placeholder={"One session title per line, e.g.\n14 Years of systemd\nWhat FLOSS Means in the AI World"}
+                  rows={7}
+                  className="input input--textarea"
+                  style={{ marginBottom: 12 }}
+                />
+                <div className="cfp-fallback-actions">
+                  <button onClick={() => submitPastTalks(pastTalksDraft)} className="btn-continue">
+                    ▶ USE THESE EXAMPLES
+                  </button>
+                  <button onClick={() => submitPastTalks("")} className="btn-skip">
+                    Skip
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="agent-list">
               {AGENTS.map((a) => {
                 const isDone   = agentProgress.includes(a.id);
-                const isActive = activeAgent === a.id;
+                const isActive = activeAgents.includes(a.id);
                 return (
                   <div key={a.id} className="agent-progress-card" style={{
                     border: `1px solid ${isDone ? a.color + "55" : isActive ? a.color : "#1E2030"}`,
@@ -541,18 +762,18 @@ ${truncate(results.audience)}
 
               {/* Synthesis indicator */}
               <div className="synthesis-card" style={{
-                border: `1px solid ${activeAgent === "synthesis" ? "#F59E0B" : "#1E2030"}`,
-                boxShadow: activeAgent === "synthesis" ? "0 0 20px #F59E0B22" : "none",
+                border: `1px solid ${activeAgents.includes("synthesis") ? "#F59E0B" : "#1E2030"}`,
+                boxShadow: activeAgents.includes("synthesis") ? "0 0 20px #F59E0B22" : "none",
               }}>
                 <div className="synthesis-card-inner">
                   <span className="synthesis-icon">🧠</span>
                   <div>
                     <div className="synthesis-title"
-                      style={{ color: activeAgent === "synthesis" ? "#F59E0B" : "#4B5563" }}>
+                      style={{ color: activeAgents.includes("synthesis") ? "#F59E0B" : "#4B5563" }}>
                       Master Synthesiser
                     </div>
                     <div className="synthesis-desc">
-                      {activeAgent === "synthesis"
+                      {activeAgents.includes("synthesis")
                         ? "Compiling final report and rewrite suggestions..."
                         : "Waiting for all agents..."}
                     </div>
