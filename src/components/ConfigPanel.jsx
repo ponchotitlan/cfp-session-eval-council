@@ -9,7 +9,7 @@ const MIN_DELAY_SECONDS = 0;
 
 const GEAR_PATH = "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z";
 
-export function GearIcon({ size = 16, color = "#6B7280", className = "gear-icon" }) {
+export function GearIcon({ size = 16, color = "var(--text-gray)", className = "gear-icon" }) {
   return (
     <svg
       width={size}
@@ -94,7 +94,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
       <div className="config-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="config-modal-header">
-          <GearIcon size={20} color="#A78BFA" />
+          <GearIcon size={20} color="var(--cisco-primary)" />
           <div style={{ flex: 1 }}>
             <div className="config-modal-title">SETTINGS</div>
             <div className="config-modal-sub">Stored locally in your browser</div>
@@ -113,9 +113,9 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                   onClick={() => handleProviderChange(p.id)}
                   className="provider-tab"
                   style={{
-                    background: draft.provider === p.id ? "#A78BFA22" : "transparent",
-                    border: draft.provider === p.id ? "1px solid #A78BFA88" : "1px solid #1E2030",
-                    color: draft.provider === p.id ? "#A78BFA" : "#6B7280",
+                    background: draft.provider === p.id ? "rgba(77, 163, 232, 0.13)" : "transparent",
+                    border: draft.provider === p.id ? "1px solid var(--cisco-primary)" : "1px solid var(--border-main)",
+                    color: draft.provider === p.id ? "var(--cisco-primary)" : "var(--text-gray)",
                   }}
                 >
                   <span>{p.icon}</span> {p.label}
@@ -140,7 +140,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 placeholder={activeProvider.keyHint}
                 className="config-input config-input--with-btn"
                 style={{
-                  fontFamily: showKey ? "'IBM Plex Mono', monospace" : "monospace",
+                  fontFamily: showKey ? "Arial, sans-serif, apple-system" : "monospace",
                   letterSpacing: showKey ? "normal" : "0.1em",
                 }}
               />
@@ -185,8 +185,8 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 onClick={() => setShowDelayTip((v) => !v)}
                 className="info-btn"
                 style={{
-                  background: showDelayTip ? "#A78BFA" : "#1E2030",
-                  color:      showDelayTip ? "#0D0F1A" : "#6B7280",
+                  background: showDelayTip ? "var(--cisco-primary)" : "var(--border-main)",
+                  color:      showDelayTip ? "var(--bg-page)" : "var(--text-gray)",
                 }}
               >
                 i

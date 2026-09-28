@@ -5,6 +5,7 @@
 // AI elements and other utils
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { AGENTS, SYNTHESISER_PROMPT } from "./config/agents";
 import { DEFAULT_MODELS } from "./config/models";
 import { callLLM } from "./lib/llm";
@@ -527,19 +528,19 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
           <div className="agent-dots">
             {AGENTS.map((a) => (
               <div key={a.id} className="agent-dot" style={{
-                background: agentProgress.includes(a.id) || activeAgents.includes(a.id) ? a.color : "#1E2030",
+                background: agentProgress.includes(a.id) || activeAgents.includes(a.id) ? a.color : "var(--border-main)",
                 boxShadow: activeAgents.includes(a.id) ? `0 0 8px ${a.color}` : "none",
               }} />
             ))}
           </div>
-          <button onClick={() => setConfigOpen(true)} title="Settings" className="config-btn"
+          <button onClick={() => setConfigOpen(true)} title="Settings" aria-label="Settings" className="config-btn"
             style={{
-              background: config.apiKey ? "#111320" : "#2D1A0E",
-              border: config.apiKey ? "1px solid #1E2030" : "1px solid #F59E0B88",
-              boxShadow: config.apiKey ? "none" : "0 0 10px #F59E0B44",
+              background: config.apiKey ? "var(--bg-white)" : "#3A3010",
+              border: config.apiKey ? "1px solid var(--border-main)" : "1px solid #FFEA3C88",
+              boxShadow: config.apiKey ? "none" : "0 0 10px #FFEA3C44",
             }}
           >
-            <GearIcon color={config.apiKey ? "#6B7280" : "#F59E0B"} />
+            <GearIcon color={config.apiKey ? "var(--text-gray)" : "var(--color-warning)"} />
           </button>
         </div>
       </div>
@@ -641,7 +642,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                 <div className="countdown-wrapper">
                   <div className="countdown-label">{countdownLabel}</div>
                   <div className="countdown-number"
-                    style={{ color: countdown <= 5 ? "#34D399" : "#F59E0B" }}>
+                    style={{ color: countdown <= 5 ? "var(--color-success)" : "var(--color-warning)" }}>
                     {countdown}s
                   </div>
                   <div className="countdown-bar-track">
@@ -727,15 +728,14 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                 const isActive = activeAgents.includes(a.id);
                 return (
                   <div key={a.id} className="agent-progress-card" style={{
-                    border: `1px solid ${isDone ? a.color + "55" : isActive ? a.color : "#1E2030"}`,
-                    boxShadow: isActive ? `0 0 20px ${a.color}22` : "none",
+                    border: `1px solid ${isDone ? a.color + "55" : isActive ? a.color : "var(--border-main)"}`,
                   }}>
                     <div className="agent-progress-row"
                       style={{ marginBottom: isDone && agentResults[a.id] ? 12 : 0 }}>
                       <span className="agent-progress-icon">{a.icon}</span>
                       <div className="agent-progress-info">
                         <div className="agent-progress-name"
-                          style={{ color: isDone ? a.color : isActive ? a.color : "#4B5563" }}>
+                          style={{ color: isDone ? a.color : isActive ? a.color : "var(--text-gray)" }}>
                           {a.label}
                         </div>
                         <div className="agent-progress-desc">
@@ -744,7 +744,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                       </div>
                       <div className="agent-progress-status" style={{
                         background:  isDone ? a.color : "transparent",
-                        border:      isDone ? "none" : isActive ? `2px solid ${a.color}` : "2px solid #1E2030",
+                        border:      isDone ? "none" : isActive ? `2px solid ${a.color}` : "2px solid var(--border-main)",
                         animation:   isActive ? "spin 1s linear infinite" : "none",
                       }}>
                         {isDone ? "✓" : isActive ? "◌" : ""}
@@ -762,14 +762,13 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
 
               {/* Synthesis indicator */}
               <div className="synthesis-card" style={{
-                border: `1px solid ${activeAgents.includes("synthesis") ? "#F59E0B" : "#1E2030"}`,
-                boxShadow: activeAgents.includes("synthesis") ? "0 0 20px #F59E0B22" : "none",
+                border: `1px solid ${activeAgents.includes("synthesis") ? "var(--color-warning)" : "var(--border-main)"}`,
               }}>
                 <div className="synthesis-card-inner">
                   <span className="synthesis-icon">🧠</span>
                   <div>
                     <div className="synthesis-title"
-                      style={{ color: activeAgents.includes("synthesis") ? "#F59E0B" : "#4B5563" }}>
+                      style={{ color: activeAgents.includes("synthesis") ? "var(--color-warning)" : "var(--text-gray)" }}>
                       Master Synthesiser
                     </div>
                     <div className="synthesis-desc">
@@ -788,8 +787,9 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
         {phase === "done" && (
           <div ref={resultsRef}>
             <div className="scores-grid">
-              <ScoreCard label="ACCEPTANCE LIKELIHOOD" score={acceptanceScore} color="#34D399" icon="🎯" />
-              <ScoreCard label="AUDIENCE APPEAL"        score={audienceScore}   color="#FB923C" icon="🙋" />
+              {/* Literal hex, not var(): ScoreCard concatenates alpha suffixes onto `color`. */}
+              <ScoreCard label="ACCEPTANCE LIKELIHOOD" score={acceptanceScore} color="#5FD97A" icon="🎯" />
+              <ScoreCard label="AUDIENCE APPEAL"        score={audienceScore}   color="#5BB0FC" icon="🙋" />
             </div>
 
             <div className="agent-reports-section">
@@ -811,7 +811,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                   </div>
                 </div>
                 <div className="synthesis-output-content md-content">
-                  <ReactMarkdown>{synthesis}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{synthesis}</ReactMarkdown>
                 </div>
               </div>
             )}

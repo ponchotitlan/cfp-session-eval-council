@@ -4,6 +4,7 @@
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /**
  * Collapsible card that shows an individual agent's Markdown report.
@@ -16,7 +17,7 @@ export default function AgentReport({ agent, content }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="agent-report"
-      style={{ border: `1px solid ${open ? agent.color + "44" : "#1E2030"}` }}>
+      style={{ border: `1px solid ${open ? agent.color + "44" : "var(--border-main)"}` }}>
       <button onClick={() => setOpen(!open)} className="agent-report-toggle">
         <span className="agent-report-icon">{agent.icon}</span>
         <span className="agent-report-name" style={{ color: agent.color }}>
@@ -27,7 +28,7 @@ export default function AgentReport({ agent, content }) {
       {open && (
         <div className="agent-report-body md-content"
           style={{ borderTop: `1px solid ${agent.color}22` }}>
-          <ReactMarkdown>{content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       )}
     </div>

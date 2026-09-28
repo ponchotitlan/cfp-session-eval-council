@@ -13,7 +13,7 @@
  * @param {string}      icon   - Emoji icon displayed above the score.
  */
 export default function ScoreCard({ label, score, color, icon }) {
-  const valueColor = score >= 70 ? color : score >= 50 ? "#F59E0B" : "#F87171";
+  const valueColor = score >= 70 ? color : score >= 50 ? "var(--color-warning)" : "var(--color-error)";
   return (
     <div className="score-card" style={{ border: `1px solid ${color}44` }}>
       <div className="score-card-icon">{icon}</div>
