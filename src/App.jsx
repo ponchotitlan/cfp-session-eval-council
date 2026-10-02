@@ -11,6 +11,7 @@ import { DEFAULT_MODELS } from "./config/models";
 import { callLLM } from "./lib/llm";
 import { DEFAULT_CONFIG, analyserCouldNotAccess, extractScore } from "./lib/utils";
 import { fetchResearch, researchBlock } from "./lib/research";
+import { saveEvent } from "./lib/events";
 
 // CSS styles
 import "./App.css";
@@ -21,6 +22,8 @@ import Field from "./components/Field";
 import ScoreCard from "./components/ScoreCard";
 import AgentReport from "./components/AgentReport";
 import AgentPipelineDiagram from "./components/AgentPipelineDiagram";
+import SessionLibraryModal from "./components/SessionLibraryModal";
+import EventLibraryModal from "./components/EventLibraryModal";
 
 const APP_DEFAULT_CONFIG = { ...DEFAULT_CONFIG, model: DEFAULT_MODELS.anthropic };
 
@@ -74,6 +77,43 @@ const SYNTHESIS_UNAVAILABLE =
   "⚠️ **No synthesis could be produced.** Both evaluator agents failed, so there was nothing to synthesise. " +
   "See the agent reports below for the underlying error, then try again.";
 
+const truncateForSynthesis = (text, max = 1200) =>
+  text && text.length > max ? text.slice(0, max) + "\n[truncated for brevity]" : text;
+
+/**
+ * Assembles the Synthesiser's input: the original session, both evaluator
+ * reports, and — when the submitter wrote any — their style preferences for
+ * the rewrite suggestion. Shared by the first run, the resubmit, and the
+ * saved-event shortcut so the three cannot drift apart.
+ *
+ * Returns null when both evaluators failed, which is the caller's signal to
+ * show SYNTHESIS_UNAVAILABLE instead of calling the model.
+ */
+const buildSynthesisInput = (sessionContext, results, styleNotes) => {
+  const evaluations = [
+    ["PROGRAMME COMMITTEE EVALUATION", results.committee],
+    ["AUDIENCE MEMBER EVALUATION", results.audience],
+  ].filter(([, text]) => text);
+
+  if (evaluations.length === 0) return null;
+
+  const missing = evaluations.length === 1
+    ? "\n\nNOTE: One evaluator agent failed. Base your synthesis only on the evaluation provided above and say so in your answer."
+    : "";
+
+  const styleBlock = styleNotes?.trim()
+    ? `\n\n---\nSTYLE PREFERENCES FOR THE REWRITE (from the submitter — follow these when writing the title/abstract rewrite, even where they override the default length or structure):\n${styleNotes.trim()}`
+    : "";
+
+  return `
+ORIGINAL SESSION:
+${sessionContext}
+
+---
+${evaluations.map(([label, text]) => `${label}:\n${truncateForSynthesis(text)}`).join("\n\n---\n")}${missing}${styleBlock}
+  `.trim();
+};
+
 /**
  * Root application component. Manages the full evaluation lifecycle:
  * idle form → running (multi-agent LLM calls with rate-limit countdowns) →
@@ -87,6 +127,12 @@ export default function SessionEvaluator() {
   const [eventUrl, setEventUrl] = useState("");
   const [cfpUrl, setCfpUrl] = useState("");
   const [pastAgendaUrl, setPastAgendaUrl] = useState("");
+  // Optional writing-style guidance (tone, length, structure, ...) the
+  // Synthesiser should follow when it writes the rewrite suggestion. Kept
+  // separate per screen, since a resubmit may want different style notes
+  // than the original run.
+  const [styleNotes, setStyleNotes] = useState("");
+  const [resubmitStyleNotes, setResubmitStyleNotes] = useState("");
   const [cfpText, setCfpText] = useState("");
   const [needsCfpText, setNeedsCfpText] = useState(false);
   // Deterministic programme retrieval, and the user's pasted fallback for it.
@@ -126,6 +172,24 @@ export default function SessionEvaluator() {
     } catch { return { ...APP_DEFAULT_CONFIG, delayMigrated: true }; }
   });
   const [configOpen, setConfigOpen] = useState(false);
+  // Which form the saved-session library should populate when a session is
+  // picked: "idle" | "resubmit" | null (closed).
+  const [sessionLibraryTarget, setSessionLibraryTarget] = useState(null);
+
+  // Saved-event library: a previously-saved event's CFP Analyser / Conference
+  // Researcher verdicts, reused instead of re-running those two agents.
+  const [eventLibraryOpen, setEventLibraryOpen] = useState(false);
+  const [loadedEvent, setLoadedEvent] = useState(null);
+  // Whether this run's analyser/researcher verdicts were freshly produced
+  // (true) or came from a loaded event (false) — only a fresh pair is worth
+  // offering to save, since a loaded event is already saved by definition.
+  // A resubmit inherits whatever this was for the original run.
+  const [eventSourceIsFresh, setEventSourceIsFresh] = useState(true);
+  const [savingEvent, setSavingEvent] = useState(false);
+  const [eventNameDraft, setEventNameDraft] = useState("");
+  const [eventSaving, setEventSaving] = useState(false);
+  const [eventSaveError, setEventSaveError] = useState("");
+  const [eventSaved, setEventSaved] = useState(false);
 
   // Persist config to localStorage whenever it changes
   useEffect(() => {
@@ -165,6 +229,68 @@ export default function SessionEvaluator() {
     a.download = `cfp-evaluation-${(title || "session").toLowerCase().replace(/\s+/g, "-")}.md`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Default event name offered when saving: the event URL's own hostname,
+  // title-cased, or a dated fallback when there is no event URL to go on.
+  const suggestEventName = () => {
+    if (eventUrl.trim()) {
+      try {
+        const host = new URL(eventUrl.trim()).hostname.replace(/^www\./, "");
+        const base = host.split(".")[0];
+        if (base) return base.charAt(0).toUpperCase() + base.slice(1);
+      } catch { /* not a valid URL — fall through to the dated default */ }
+    }
+    return `Event — ${new Date().toLocaleDateString()}`;
+  };
+
+  const startSaveEvent = () => {
+    setEventNameDraft(suggestEventName());
+    setEventSaveError("");
+    setSavingEvent(true);
+  };
+
+  const confirmSaveEvent = async () => {
+    if (!eventNameDraft.trim()) {
+      setEventSaveError("Please provide a name for this event.");
+      return;
+    }
+    setEventSaving(true);
+    setEventSaveError("");
+    try {
+      await saveEvent({
+        name: eventNameDraft,
+        eventUrl,
+        cfpUrl,
+        pastAgendaUrl,
+        analyserVerdict: agentResults.analyser,
+        researcherVerdict: agentResults.researcher,
+      });
+      setSavingEvent(false);
+      setEventSaved(true);
+    } catch (e) {
+      setEventSaveError(e.message);
+    } finally {
+      setEventSaving(false);
+    }
+  };
+
+  // Loading a saved event overwrites the 3 URL fields with what was saved
+  // alongside its verdicts (shown, but disabled — they're no longer needed
+  // for anything, since the agents that would have read them won't run).
+  const selectLoadedEvent = (ev) => {
+    setLoadedEvent(ev);
+    setEventUrl(ev.eventUrl || "");
+    setCfpUrl(ev.cfpUrl || "");
+    setPastAgendaUrl(ev.pastAgendaUrl || "");
+    setEventLibraryOpen(false);
+  };
+
+  const clearLoadedEvent = () => {
+    setLoadedEvent(null);
+    setEventUrl("");
+    setCfpUrl("");
+    setPastAgendaUrl("");
   };
 
   // Prompts the user to paste the CFP text when the analyser agent fails to access the URL. Returns a promise that resolves with the pasted text.
@@ -239,6 +365,24 @@ export default function SessionEvaluator() {
     }
   };
 
+  // Builds and calls the Synthesiser, writing the result (or a failure
+  // message) into `synthesis`. Shared by every flow that reaches the
+  // synthesis step, so style notes and the "both evaluators failed" fallback
+  // behave identically everywhere.
+  const runSynthesis = async (sessionContext, results, notes) => {
+    const synthesisInput = buildSynthesisInput(sessionContext, results, notes);
+    if (synthesisInput === null) {
+      setSynthesis(SYNTHESIS_UNAVAILABLE);
+      return;
+    }
+    try {
+      const synth = await callWithRetry(SYNTHESISER_PROMPT, synthesisInput, 4096);
+      setSynthesis(synth);
+    } catch (e) {
+      setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
+    }
+  };
+
   // Dispatches `agents` concurrently and records each outcome once all have
   // settled. Pass a single agent to run it on its own. Uses allSettled rather
   // than all so that one agent failing never cancels or orphans its peers.
@@ -247,7 +391,12 @@ export default function SessionEvaluator() {
   // a failure is shown on the agent's card but deliberately kept out of
   // `results`, so an error string is never fed to another agent.
   const runAgents = async (agents, results, buildMessage) => {
-    setActiveAgents(agents.map((a) => a.id));
+    // Merges into whatever is already active rather than replacing it, so
+    // that two independent `runAgents` calls in flight at once (e.g. the
+    // analyser and researcher each running their own fallback chain) don't
+    // clobber each other's "active" state.
+    const ids = agents.map((a) => a.id);
+    setActiveAgents((prev) => [...new Set([...prev, ...ids])]);
 
     // Each agent's card flips to "Complete" the moment that agent finishes,
     // rather than when the whole wave does.
@@ -293,6 +442,9 @@ export default function SessionEvaluator() {
     setAgentResults({});
     setSynthesis("");
     setAgentProgress([]);
+    setEventSourceIsFresh(!loadedEvent);
+    setEventSaved(false);
+    setSavingEvent(false);
 
     const buildContext = (extraText) => `
 SESSION TITLE: ${title}
@@ -303,6 +455,30 @@ EVENT URL: ${eventUrl || "Not provided"}
 CALL FOR PAPERS URL: ${cfpUrl || "Not provided"}
 ${extraText.trim() ? `\nCALL FOR PAPERS TEXT:\n${extraText.trim()}` : ""}
     `.trim();
+
+    // A saved event already has final Analyser/Researcher verdicts — skip
+    // wave 1 and the research fetch entirely, and go straight to Committee /
+    // Audience / Synthesiser, spending no tokens re-deriving what this
+    // event's CFP analysis and conference research already say.
+    if (loadedEvent) {
+      const sessionContext = buildContext(cfpText);
+      const results = { analyser: loadedEvent.analyserVerdict, researcher: loadedEvent.researcherVerdict };
+      setAgentResults({ ...results });
+      setAgentProgress(["analyser", "researcher"]);
+
+      const buildMessage = (agentId) => buildAgentMessage(agentId, sessionContext, results);
+      const evalAgents = AGENTS.filter((a) => a.id === "committee" || a.id === "audience");
+      await runAgents(evalAgents, results, buildMessage);
+
+      await interAgentDelay();
+      setActiveAgents(["synthesis"]);
+      await runSynthesis(sessionContext, results, styleNotes);
+
+      setActiveAgents([]);
+      setPhase("done");
+      setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+      return;
+    }
 
     let sessionContext = buildContext(cfpText);
 
@@ -334,76 +510,56 @@ ${extraText.trim() ? `\nCALL FOR PAPERS TEXT:\n${extraText.trim()}` : ""}
     };
 
     // Wave 1 — the analyser and researcher read nothing but the session
-    // context, so they run concurrently. The researcher works from the
-    // conference URL and its own knowledge and never reads the CFP text, so
-    // it is unaffected by a later CFP-paste fallback rebuilding the context.
-    const independent = AGENTS.filter((a) => INDEPENDENT_AGENT_IDS.includes(a.id));
-    await runAgents(independent, results, buildMessage);
+    // context, so they run concurrently, each as its own independent chain
+    // (run → maybe prompt for help → re-run). The two chains are awaited
+    // together via Promise.all below rather than one after the other, so
+    // whichever agent discovers it needs the submitter's input prompts for
+    // it immediately — it never waits on the other agent to finish first,
+    // and if both need help around the same time, both prompts appear at
+    // once instead of one being queued behind the other.
 
     // If the analyser couldn't read the CFP URL, pause for a paste and re-run
     // it alone. The researcher's result stands — it never used the CFP text.
-    if (results.analyser && analyserCouldNotAccess(results.analyser)) {
-      const pastedText = await waitForCfpText();
-      sessionContext = buildContext(pastedText);
-      // Reset the analyser card to "active" before retrying
-      setAgentProgress((prev) => prev.filter((id) => id !== "analyser"));
+    const runAnalyserChain = async () => {
       const analyser = AGENTS.find((a) => a.id === "analyser");
       await runAgents([analyser], results, buildMessage);
-    }
+      if (results.analyser && analyserCouldNotAccess(results.analyser)) {
+        const pastedText = await waitForCfpText();
+        sessionContext = buildContext(pastedText);
+        // Reset the analyser card to "active" before retrying
+        setAgentProgress((prev) => prev.filter((id) => id !== "analyser"));
+        await runAgents([analyser], results, buildMessage);
+      }
+    };
 
     // Retrieval found nothing usable (JS-rendered programme, bot-block, no
     // event URL). Offer the user a chance to supply real examples, then re-run
     // the researcher with them. Skipping leaves the unverified result as-is.
-    if (results.researcher && !researchResult?.ok) {
-      const pasted = await waitForPastTalks();
-      if (pasted.trim()) {
-        pastTalks = pasted;
-        setAgentProgress((prev) => prev.filter((id) => id !== "researcher"));
-        const researcher = AGENTS.find((a) => a.id === "researcher");
-        await runAgents([researcher], results, buildMessage);
+    const runResearcherChain = async () => {
+      const researcher = AGENTS.find((a) => a.id === "researcher");
+      await runAgents([researcher], results, buildMessage);
+      if (results.researcher && !researchResult?.ok) {
+        const pasted = await waitForPastTalks();
+        if (pasted.trim()) {
+          pastTalks = pasted;
+          setAgentProgress((prev) => prev.filter((id) => id !== "researcher"));
+          await runAgents([researcher], results, buildMessage);
+        }
       }
-    }
+    };
 
-    // Wave 2 — each of these depends on wave 1's output, so they stay
-    // sequential and are built only after the results above are in.
-    for (const agent of AGENTS.filter((a) => !INDEPENDENT_AGENT_IDS.includes(a.id))) {
-      await interAgentDelay();
-      await runAgents([agent], results, buildMessage);
-    }
+    await Promise.all([runAnalyserChain(), runResearcherChain()]);
+
+    // Wave 2 — both of these only read wave 1's output, which is already
+    // final by this point (any paste fallback above has already resolved),
+    // so they have no dependency on each other and go out concurrently.
+    const evalAgents = AGENTS.filter((a) => !INDEPENDENT_AGENT_IDS.includes(a.id));
+    await interAgentDelay();
+    await runAgents(evalAgents, results, buildMessage);
 
     await interAgentDelay();
     setActiveAgents(["synthesis"]);
-
-    const truncate = (text, max = 1200) =>
-      text && text.length > max ? text.slice(0, max) + "\n[truncated for brevity]" : text;
-
-    const evaluations = [
-      ["PROGRAMME COMMITTEE EVALUATION", results.committee],
-      ["AUDIENCE MEMBER EVALUATION", results.audience],
-    ].filter(([, text]) => text);
-
-    if (evaluations.length === 0) {
-      // Both evaluators failed — a synthesis here would be invented, not derived.
-      setSynthesis(SYNTHESIS_UNAVAILABLE);
-    } else {
-      const missing = evaluations.length === 1
-        ? "\n\nNOTE: One evaluator agent failed. Base your synthesis only on the evaluation provided above and say so in your answer."
-        : "";
-      const synthesisInput = `
-ORIGINAL SESSION:
-${sessionContext}
-
----
-${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n---\n")}${missing}
-      `.trim();
-
-      try {
-        const synth = await callWithRetry(SYNTHESISER_PROMPT, synthesisInput, 4096);
-        setSynthesis(synth);
-      } catch (e) {
-        setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
-      }
-    }
+    await runSynthesis(sessionContext, results, styleNotes);
 
     setActiveAgents([]);
     setPhase("done");
@@ -428,12 +584,18 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
     setNeedsPastTalks(false);
     setPastTalksDraft("");
     pastTalksResolverRef.current = null;
+    // Deliberately NOT clearing loadedEvent: evaluating several sessions in a
+    // row against the same saved event is the whole point of this feature.
+    setSavingEvent(false);
+    setEventSaveError("");
+    setEventSaved(false);
   };
 
   // Starts the resubmit flow, which allows the user to enter a new title and abstract for the same event. The CFP analysis and conference research are preserved, and only the Committee and Audience agents will re-run.
   const startResubmit = () => {
     setResubmitTitle("");
     setResubmitAbstract("");
+    setResubmitStyleNotes("");
     setError("");
     setPhase("resubmit");
   };
@@ -470,43 +632,14 @@ ${cfpText.trim() ? `\nCALL FOR PAPERS TEXT:\n${cfpText.trim()}` : ""}
     const buildMessage = (agentId) => buildAgentMessage(agentId, sessionContext, results);
 
     // Both read only the *preserved* analyser/researcher output, which is
-    // already in `results` before either starts — so unlike the first run,
-    // here they have no dependency on each other and go out concurrently.
+    // already in `results` before either starts, so — same as the first
+    // run — they have no dependency on each other and go out concurrently.
     const evalAgents = AGENTS.filter((a) => a.id === "committee" || a.id === "audience");
     await runAgents(evalAgents, results, buildMessage);
 
     await interAgentDelay();
     setActiveAgents(["synthesis"]);
-
-    const truncate = (text, max = 1200) =>
-      text && text.length > max ? text.slice(0, max) + "\n[truncated for brevity]" : text;
-
-    const evaluations = [
-      ["PROGRAMME COMMITTEE EVALUATION", results.committee],
-      ["AUDIENCE MEMBER EVALUATION", results.audience],
-    ].filter(([, text]) => text);
-
-    if (evaluations.length === 0) {
-      setSynthesis(SYNTHESIS_UNAVAILABLE);
-    } else {
-      const missing = evaluations.length === 1
-        ? "\n\nNOTE: One evaluator agent failed. Base your synthesis only on the evaluation provided above and say so in your answer."
-        : "";
-      const synthesisInput = `
-ORIGINAL SESSION:
-${sessionContext}
-
----
-${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n---\n")}${missing}
-      `.trim();
-
-      try {
-        const synth = await callWithRetry(SYNTHESISER_PROMPT, synthesisInput, 4096);
-        setSynthesis(synth);
-      } catch (e) {
-        setSynthesis(`⚠️ Synthesis failed: ${e.message}`);
-      }
-    }
+    await runSynthesis(sessionContext, results, resubmitStyleNotes);
 
     setActiveAgents([]);
     setPhase("done");
@@ -555,7 +688,12 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
             {error && <div className="error-banner">{error}</div>}
 
             <div className="form-grid">
-              <Field label="SESSION TITLE *">
+              <Field label="SESSION TITLE *"
+                action={
+                  <button type="button" onClick={() => setSessionLibraryTarget("idle")} className="btn-field-action">
+                    📚 Use a saved session
+                  </button>
+                }>
                 <input
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -574,6 +712,24 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                 />
               </Field>
 
+              <Field label="WRITING STYLE NOTES" hint="Optional — for the rewrite suggestion">
+                <textarea
+                  value={styleNotes}
+                  onChange={(e) => setStyleNotes(e.target.value)}
+                  placeholder="e.g. Keep it to two short paragraphs, confident tone, no jargon, open with a question..."
+                  rows={3}
+                  className="input input--textarea"
+                />
+              </Field>
+
+              {!loadedEvent && (
+                <div className="form-row-actions">
+                  <button type="button" onClick={() => setEventLibraryOpen(true)} className="btn-field-action">
+                    🗂️ Load a saved event
+                  </button>
+                </div>
+              )}
+
               <div className="form-row-3col">
                 <Field label="EVENT URL" hint="Conference homepage">
                   <input
@@ -581,6 +737,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                     onChange={(e) => setEventUrl(e.target.value)}
                     placeholder="https://ciscolive.com"
                     className="input"
+                    disabled={!!loadedEvent}
                   />
                 </Field>
                 <Field label="CALL FOR PAPERS URL" hint="CFP page or PDF">
@@ -589,6 +746,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                     onChange={(e) => setCfpUrl(e.target.value)}
                     placeholder="https://event.com/cfp"
                     className="input"
+                    disabled={!!loadedEvent}
                   />
                 </Field>
                 <Field label="PAST AGENDA URL" hint="A past edition's programme">
@@ -597,9 +755,22 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                     onChange={(e) => setPastAgendaUrl(e.target.value)}
                     placeholder="https://event.com/2025/agenda"
                     className="input"
+                    disabled={!!loadedEvent}
                   />
                 </Field>
               </div>
+
+              {loadedEvent && (
+                <div className="loaded-event-banner">
+                  <span>
+                    🗂️ Using saved verdicts for <strong>{loadedEvent.name}</strong> — CFP Analyser and
+                    Conference Researcher won't run for this session.
+                  </span>
+                  <button type="button" onClick={clearLoadedEvent} className="btn-field-action">
+                    ✕ Use a different event
+                  </button>
+                </div>
+              )}
 
               <button onClick={runEvaluation} className="submit-btn">
                 ⚡ RUN EVALUATION
@@ -803,7 +974,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
               <button onClick={reset} className="btn-reset">
                 ← EVALUATE ANOTHER SESSION
               </button>
@@ -813,7 +984,35 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
               <button onClick={exportMarkdown} className="btn-export">
                 ↓ EXPORT AS .MD
               </button>
+              {eventSourceIsFresh && agentResults.analyser && agentResults.researcher && !savingEvent && (
+                eventSaved ? (
+                  <span className="event-saved-badge">✓ Event saved</span>
+                ) : (
+                  <button type="button" onClick={startSaveEvent} className="btn-field-action">
+                    💾 Save this event
+                  </button>
+                )
+              )}
             </div>
+
+            {savingEvent && (
+              <div className="save-event-form">
+                <Field label="EVENT NAME" hint="Shown in the saved-events list">
+                  <input
+                    value={eventNameDraft}
+                    onChange={(e) => { setEventNameDraft(e.target.value); setEventSaveError(""); }}
+                    className="config-input"
+                  />
+                </Field>
+                {eventSaveError && <div className="delay-error">{eventSaveError}</div>}
+                <div className="session-edit-actions">
+                  <button onClick={confirmSaveEvent} disabled={eventSaving} className="btn-session-save">
+                    {eventSaving ? "SAVING…" : "SAVE EVENT"}
+                  </button>
+                  <button onClick={() => setSavingEvent(false)} className="btn-session-cancel">Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -830,7 +1029,12 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
             {error && <div className="error-banner">{error}</div>}
 
             <div className="form-grid">
-              <Field label="SESSION TITLE *">
+              <Field label="SESSION TITLE *"
+                action={
+                  <button type="button" onClick={() => setSessionLibraryTarget("resubmit")} className="btn-field-action">
+                    📚 Use a saved session
+                  </button>
+                }>
                 <input
                   value={resubmitTitle}
                   onChange={(e) => setResubmitTitle(e.target.value)}
@@ -845,6 +1049,16 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                   onChange={(e) => setResubmitAbstract(e.target.value)}
                   placeholder="Paste your session abstract here..."
                   rows={6}
+                  className="input input--textarea"
+                />
+              </Field>
+
+              <Field label="WRITING STYLE NOTES" hint="Optional — for the rewrite suggestion">
+                <textarea
+                  value={resubmitStyleNotes}
+                  onChange={(e) => setResubmitStyleNotes(e.target.value)}
+                  placeholder="e.g. Keep it to two short paragraphs, confident tone, no jargon, open with a question..."
+                  rows={3}
                   className="input input--textarea"
                 />
               </Field>
@@ -867,6 +1081,29 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
           config={config}
           onSave={(next) => { setConfig(next); setConfigOpen(false); }}
           onClose={() => setConfigOpen(false)}
+        />
+      )}
+
+      {sessionLibraryTarget && (
+        <SessionLibraryModal
+          onClose={() => setSessionLibraryTarget(null)}
+          onSelect={(session) => {
+            if (sessionLibraryTarget === "resubmit") {
+              setResubmitTitle(session.title);
+              setResubmitAbstract(session.abstract);
+            } else {
+              setTitle(session.title);
+              setAbstract(session.abstract);
+            }
+            setSessionLibraryTarget(null);
+          }}
+        />
+      )}
+
+      {eventLibraryOpen && (
+        <EventLibraryModal
+          onClose={() => setEventLibraryOpen(false)}
+          onSelect={selectLoadedEvent}
         />
       )}
     </div>

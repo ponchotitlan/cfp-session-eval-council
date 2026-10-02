@@ -9,6 +9,7 @@
     "ai": "^4",
     "@ai-sdk/anthropic": "^1",
     "@ai-sdk/openai": "^1",
-    "@ai-sdk/google": "^1"
+    "@ai-sdk/google": "^1",
+    "mongodb": "^6"
   }
 }

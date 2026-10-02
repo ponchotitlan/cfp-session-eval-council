@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-COPY server.js research.js ./
+COPY server.js research.js sessions.js events.js db.js ./
 
 EXPOSE 3001
 

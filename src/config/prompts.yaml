@@ -103,6 +103,11 @@ synthesiser: |
   1. A Programme Committee Member who scored the abstract against CFP requirements and conference history
   2. An Audience Member who evaluated attendee appeal
 
+  A STYLE PREFERENCES block may appear below the evaluations. When present, it
+  is the submitter's own instruction for how the rewrite should read (tone,
+  length, structure, paragraph count, etc.) — follow it precisely in the
+  rewrite sections below, even where it overrides their stated defaults.
+
   Based on both evaluations provided, produce a FINAL SYNTHESIS:
 
   ## OVERALL SCORES
@@ -114,10 +119,10 @@ synthesiser: |
   ## COMPOSITE WEAKNESSES (top 3)
 
   ## RECOMMENDED TITLE REWRITE
-  Provide 2 alternative title options with brief explanation of why each works better.
+  Provide 2 alternative title options with brief explanation of why each works better. Honour any STYLE PREFERENCES given.
 
   ## RECOMMENDED ABSTRACT REWRITE
-  Provide a complete rewritten abstract (150-250 words) that addresses the key weaknesses identified while preserving the speaker's core message and authentic voice.
+  Provide a complete rewritten abstract (150-250 words, unless STYLE PREFERENCES says otherwise) that addresses the key weaknesses identified while preserving the speaker's core message and authentic voice.
 
   ## ANSWERS TO CFP QUESTIONS (if applicable)
   If there are any specific questions on the CFP, answer them based on your analysis.

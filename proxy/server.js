@@ -8,6 +8,8 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { researchConference } from "./research.js";
+import { listSessions, createSession, updateSession } from "./sessions.js";
+import { listEvents, createEvent } from "./events.js";
 
 const PORT = 3001;
 
@@ -78,7 +80,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, x-user-api-key",
     });
     res.end();
@@ -117,6 +119,86 @@ const server = http.createServer((req, res) => {
           reason: `retrieval failed (${err.message || err})`,
           stats: {},
         });
+      }
+    });
+    return;
+  }
+
+  // Saved-session library — a submitter's reusable { title, abstract }
+  // pairs, kept in Mongo, independent of any particular event.
+  if (req.method === "GET" && req.url === "/api/sessions") {
+    listSessions()
+      .then((sessions) => json(200, { sessions }))
+      .catch((err) => json(503, { error: { message: `could not reach the session store (${err.message})` } }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/sessions") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      let title, abstract;
+      try {
+        ({ title, abstract } = JSON.parse(raw));
+      } catch {
+        return json(400, { error: { message: "Invalid JSON body." } });
+      }
+      try {
+        const session = await createSession({ title, abstract });
+        json(201, { session });
+      } catch (err) {
+        json(400, { error: { message: err.message || String(err) } });
+      }
+    });
+    return;
+  }
+
+  const sessionIdMatch = req.url.match(/^\/api\/sessions\/([^/]+)$/);
+  if (req.method === "PUT" && sessionIdMatch) {
+    const id = sessionIdMatch[1];
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      let title, abstract;
+      try {
+        ({ title, abstract } = JSON.parse(raw));
+      } catch {
+        return json(400, { error: { message: "Invalid JSON body." } });
+      }
+      try {
+        const session = await updateSession(id, { title, abstract });
+        json(200, { session });
+      } catch (err) {
+        json(400, { error: { message: err.message || String(err) } });
+      }
+    });
+    return;
+  }
+
+  // Saved-event library — a named conference's CFP Analyser / Conference
+  // Researcher verdicts, reusable across future sessions for that event.
+  if (req.method === "GET" && req.url === "/api/events") {
+    listEvents()
+      .then((events) => json(200, { events }))
+      .catch((err) => json(503, { error: { message: `could not reach the event store (${err.message})` } }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/events") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", async () => {
+      let name, eventUrl, cfpUrl, pastAgendaUrl, analyserVerdict, researcherVerdict;
+      try {
+        ({ name, eventUrl, cfpUrl, pastAgendaUrl, analyserVerdict, researcherVerdict } = JSON.parse(raw));
+      } catch {
+        return json(400, { error: { message: "Invalid JSON body." } });
+      }
+      try {
+        const event = await createEvent({ name, eventUrl, cfpUrl, pastAgendaUrl, analyserVerdict, researcherVerdict });
+        json(201, { event });
+      } catch (err) {
+        json(400, { error: { message: err.message || String(err) } });
       }
     });
     return;

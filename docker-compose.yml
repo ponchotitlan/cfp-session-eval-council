@@ -1,4 +1,11 @@
 services:
+  cfp-session-eval-council-mongo:
+    image: mongo:7
+    container_name: cfp-session-eval-council-mongo
+    volumes:
+      - cfp-session-eval-council-mongo-data:/data/db
+    restart: unless-stopped
+
   cfp-session-eval-council-proxy:
     build:
       context: ./proxy
@@ -6,6 +13,9 @@ services:
     container_name: cfp-session-eval-council-proxy
     environment:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
+      - MONGO_URL=mongodb://cfp-session-eval-council-mongo:27017/cfp_sessions
+    depends_on:
+      - cfp-session-eval-council-mongo
     restart: unless-stopped
 
   cfp-session-eval-council-app:
@@ -19,3 +29,6 @@ services:
     depends_on:
       - cfp-session-eval-council-proxy
     restart: unless-stopped
+
+volumes:
+  cfp-session-eval-council-mongo-data:
