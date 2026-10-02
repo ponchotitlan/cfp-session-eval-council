@@ -9,8 +9,8 @@ export const AGENTS = [
     id: "analyser",
     label: "CFP Analyser",
     icon: "🔍",
-    // Cisco dark-theme --cisco-cyan
-    color: "#33C9F0",
+    // Deep teal-blue — AA-readable on cream/white, distinct from the semantic tokens
+    color: "#0F6C8C",
     desc: "Extracting key requirements from the Call for Papers",
     role: prompts.agents.analyser,
   },
@@ -18,8 +18,8 @@ export const AGENTS = [
     id: "researcher",
     label: "Conference Researcher",
     icon: "📚",
-    // Cisco dark-theme --cisco-cyan-light
-    color: "#7FD3EE",
+    // Muted plum
+    color: "#5B4B8A",
     desc: "Researching past accepted sessions and conference DNA",
     role: prompts.agents.researcher,
   },
@@ -27,8 +27,8 @@ export const AGENTS = [
     id: "committee",
     label: "Programme Committee Member",
     icon: "🎯",
-    // Cisco dark-theme --color-success
-    color: "#5FD97A",
+    // Forest green
+    color: "#1E7A46",
     desc: "Evaluating from the committee's perspective",
     role: prompts.agents.committee,
   },
@@ -36,8 +36,8 @@ export const AGENTS = [
     id: "audience",
     label: "Audience Member",
     icon: "🙋",
-    // Not a Cisco token — one-off amber accent for the 4th agent identity
-    color: "#F0B429",
+    // Rust/burnt-orange — kept distinct from --color-warning's ochre
+    color: "#A8471F",
     desc: "Evaluating from the attendee's perspective",
     role: prompts.agents.audience,
   },

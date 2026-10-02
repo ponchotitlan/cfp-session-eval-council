@@ -94,7 +94,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
       <div className="config-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="config-modal-header">
-          <GearIcon size={20} color="var(--cisco-primary)" />
+          <GearIcon size={20} color="var(--text-main)" />
           <div style={{ flex: 1 }}>
             <div className="config-modal-title">SETTINGS</div>
             <div className="config-modal-sub">Stored locally in your browser</div>
@@ -113,9 +113,8 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                   onClick={() => handleProviderChange(p.id)}
                   className="provider-tab"
                   style={{
-                    background: draft.provider === p.id ? "rgba(77, 163, 232, 0.13)" : "transparent",
-                    border: draft.provider === p.id ? "1px solid var(--cisco-primary)" : "1px solid var(--border-main)",
-                    color: draft.provider === p.id ? "var(--cisco-primary)" : "var(--text-gray)",
+                    borderBottomColor: draft.provider === p.id ? "var(--highlight)" : "transparent",
+                    color: draft.provider === p.id ? "var(--highlight)" : "var(--text-gray)",
                   }}
                 >
                   <span>{p.icon}</span> {p.label}
@@ -140,7 +139,7 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 placeholder={activeProvider.keyHint}
                 className="config-input config-input--with-btn"
                 style={{
-                  fontFamily: showKey ? "Arial, sans-serif, apple-system" : "monospace",
+                  fontFamily: showKey ? "var(--font-main)" : "monospace",
                   letterSpacing: showKey ? "normal" : "0.1em",
                 }}
               />
@@ -185,8 +184,8 @@ export default function ConfigPanel({ config, onSave, onClose }) {
                 onClick={() => setShowDelayTip((v) => !v)}
                 className="info-btn"
                 style={{
-                  background: showDelayTip ? "var(--cisco-primary)" : "var(--border-main)",
-                  color:      showDelayTip ? "var(--bg-page)" : "var(--text-gray)",
+                  background: showDelayTip ? "var(--highlight)" : "var(--border-main)",
+                  color:      showDelayTip ? "#FFFFFF" : "var(--text-gray)",
                 }}
               >
                 i

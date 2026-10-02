@@ -7,7 +7,9 @@
  *
  * Given an event URL, finds the pages most likely to hold the programme or an
  * archive of past editions, extracts them, and returns a size-capped digest
- * with a source URL per section.
+ * with a source URL per section. When the submitter already knows the direct
+ * link to a past edition's agenda, that URL is accepted too and fetched
+ * directly, skipping discovery entirely for that source.
  *
  * No LLM, no API key, no third-party service — it is a plain fetch of pages
  * the user has pointed us at. It succeeds on static conference sites and
@@ -20,10 +22,14 @@ const UA =
 const TIMEOUT_MS = 7000;
 // Whole-operation ceiling. Per-request timeouts alone are not enough: three
 // slow candidates could otherwise stall the researcher for half a minute.
-const TOTAL_BUDGET_MS = 18000;
+// Bumped from the original 18s to cover the extra past-agenda fetch below.
+const TOTAL_BUDGET_MS = 24000;
 const MAX_PAGES = 3;
 const PER_PAGE_CHARS = 6000;
-const TOTAL_CHARS = 12000;
+// The homepage's own prose (ethos/positioning) only ever takes a small slice
+// of the budget — it is context, not the thing we are trying to extract.
+const ETHOS_CHARS = 1500;
+const TOTAL_CHARS = 18000;
 const POLITE_DELAY_MS = 300;
 
 // Thresholds for "tier 1 actually worked". Calibrated against real sites: a
@@ -89,6 +95,36 @@ async function buildRobots(origin, deadline) {
     }
   };
 }
+
+/**
+ * Per-origin robots.txt checker, cached per call to `researchConference`.
+ * The event URL and a submitter-supplied past-agenda URL are often on
+ * different hosts entirely (e.g. a Sessionize or Sched link), so a single
+ * global checker tied to one origin is not enough.
+ */
+function makeRobotsChecker(deadline) {
+  const cache = new Map();
+  return async (url) => {
+    let origin;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return false;
+    }
+    if (!cache.has(origin)) cache.set(origin, await buildRobots(origin, deadline));
+    return cache.get(origin)(url);
+  };
+}
+
+const isValidUrl = (u) => {
+  if (!u?.trim()) return false;
+  try {
+    new URL(u);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const stripChrome = (html) =>
   html
@@ -171,64 +207,97 @@ function titleLines(text) {
   return hits;
 }
 
+// Extracts title-like lines when the page looks like a listing, falling
+// back to raw text otherwise. Shared by every page we pull content from.
+function extractBody(html, budget) {
+  const text = toText(html);
+  const titles = titleLines(text);
+  const body = (titles.length >= 5 ? titles.join("\n") : text).slice(0, Math.min(PER_PAGE_CHARS, budget));
+  return { body, titleCount: titles.length };
+}
+
 /**
- * @param {string} eventUrl
+ * @param {string} eventUrl - The conference's homepage.
+ * @param {string} [pastAgendaUrl] - A past edition's programme/agenda page,
+ *   supplied directly by the submitter. When present, it is fetched first
+ *   and skips the (fragile) link-discovery heuristic entirely — the
+ *   submitter already knows where it is.
  * @returns {Promise<{ok: boolean, digest: string, sources: string[], reason: string|null, stats: object}>}
  */
-export async function researchConference(eventUrl) {
+export async function researchConference(eventUrl, pastAgendaUrl) {
   const empty = (reason) => ({ ok: false, digest: "", sources: [], reason, stats: {} });
 
-  let origin;
-  try {
-    origin = new URL(eventUrl).origin;
-  } catch {
-    return empty("no valid event URL was provided");
+  const hasEvent = isValidUrl(eventUrl);
+  const hasPastAgenda = isValidUrl(pastAgendaUrl);
+  if (!hasEvent && !hasPastAgenda) {
+    return empty("no valid event URL or past-agenda URL was provided");
   }
 
   const deadline = Date.now() + TOTAL_BUDGET_MS;
-  const allowed = await buildRobots(origin, deadline);
-  if (!allowed(eventUrl)) return empty("the site's robots.txt disallows fetching this page");
-
-  const root = await get(eventUrl, deadline);
-  if (!root.ok) return empty(`the event page could not be fetched (${root.why})`);
-
-  const candidates = rankLinks(root.html, root.finalUrl).filter((c) => allowed(c.url));
-  if (candidates.length === 0) {
-    return empty("no programme or archive pages could be found from the event page");
-  }
+  const allowed = makeRobotsChecker(deadline);
 
   const sources = [];
   let budget = TOTAL_CHARS;
   let totalTitles = 0;
+  let candidateCount = 0;
 
-  for (const candidate of candidates.slice(0, MAX_PAGES)) {
-    if (budget <= 0 || Date.now() >= deadline) break;
-    await sleep(POLITE_DELAY_MS);
-
-    const page = await get(candidate.url, deadline);
-    if (!page.ok) continue;
-
-    const text = toText(page.html);
-    const titles = titleLines(text);
-    // Prefer the extracted title lines; fall back to raw text when the page
-    // does not look like a listing.
-    const body = (titles.length >= 5 ? titles.join("\n") : text).slice(
-      0,
-      Math.min(PER_PAGE_CHARS, budget),
-    );
-    if (!body) continue;
-
-    budget -= body.length;
-    totalTitles += titles.length;
-    sources.push({ url: candidate.url, body, titleCount: titles.length });
+  // 1. The submitter's own past-agenda link — highest priority, and often
+  // the only source that actually works (it skips discovery, so it is
+  // immune to the JS-rendering / unconventional-URL failures discovery hits).
+  if (hasPastAgenda && (await allowed(pastAgendaUrl))) {
+    const page = await get(pastAgendaUrl, deadline);
+    if (page.ok) {
+      const { body, titleCount } = extractBody(page.html, budget);
+      if (body) {
+        budget -= body.length;
+        totalTitles += titleCount;
+        sources.push({ url: pastAgendaUrl, role: "past agenda, provided by the submitter", body });
+      }
+    }
   }
 
-  const digest = sources.map((s) => `SOURCE: ${s.url}\n${s.body}`).join("\n\n---\n\n");
+  // 2. The event homepage: its own prose for ethos/positioning (previously
+  // discarded — only its links were used), plus link-discovery for any
+  // programme/archive pages it points to.
+  if (hasEvent && (await allowed(eventUrl))) {
+    const root = await get(eventUrl, deadline);
+    if (root.ok) {
+      const ethos = toText(root.html).slice(0, Math.min(ETHOS_CHARS, budget));
+      if (ethos) {
+        budget -= ethos.length;
+        sources.push({ url: root.finalUrl, role: "conference homepage — ethos and positioning", body: ethos });
+      }
+
+      const candidates = [];
+      for (const c of rankLinks(root.html, root.finalUrl)) {
+        if (hasPastAgenda && c.url === pastAgendaUrl) continue; // already fetched above
+        if (await allowed(c.url)) candidates.push(c);
+      }
+      candidateCount = candidates.length;
+
+      for (const candidate of candidates.slice(0, MAX_PAGES)) {
+        if (budget <= 0 || Date.now() >= deadline) break;
+        await sleep(POLITE_DELAY_MS);
+
+        const page = await get(candidate.url, deadline);
+        if (!page.ok) continue;
+
+        const { body, titleCount } = extractBody(page.html, budget);
+        if (!body) continue;
+
+        budget -= body.length;
+        totalTitles += titleCount;
+        sources.push({ url: candidate.url, role: "discovered programme page", body });
+      }
+    }
+  }
+
+  const digest = sources.map((s) => `SOURCE (${s.role}): ${s.url}\n${s.body}`).join("\n\n---\n\n");
   const stats = {
     chars: digest.length,
     titleLines: totalTitles,
     pages: sources.length,
-    candidates: candidates.length,
+    candidates: candidateCount,
   };
 
   // A JS-rendered page returns a near-empty shell rather than an error, so
@@ -238,8 +307,9 @@ export async function researchConference(eventUrl) {
       ok: false,
       digest: "",
       sources: sources.map((s) => s.url),
-      reason:
-        "the programme pages returned too little content to be useful — they are most likely rendered by JavaScript",
+      reason: totalTitles === 0
+        ? "no past-session titles could be found — only general conference text was retrievable"
+        : "the programme pages returned too little content to be useful — they are most likely rendered by JavaScript",
       stats,
     };
   }

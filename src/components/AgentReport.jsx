@@ -16,18 +16,16 @@ import remarkGfm from "remark-gfm";
 export default function AgentReport({ agent, content }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="agent-report"
-      style={{ border: `1px solid ${open ? agent.color + "44" : "var(--border-main)"}` }}>
+    <div className="agent-report">
       <button onClick={() => setOpen(!open)} className="agent-report-toggle">
         <span className="agent-report-icon">{agent.icon}</span>
         <span className="agent-report-name" style={{ color: agent.color }}>
           {agent.label}
         </span>
-        <span className="agent-report-toggle-label">{open ? "▲ HIDE" : "▼ VIEW"}</span>
+        <span className="agent-report-toggle-label">{open ? "HIDE ↑" : "VIEW ↓"}</span>
       </button>
       {open && (
-        <div className="agent-report-body md-content"
-          style={{ borderTop: `1px solid ${agent.color}22` }}>
+        <div className="agent-report-body md-content">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       )}

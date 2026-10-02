@@ -44,17 +44,44 @@ agents:
   committee: |
     You are an experienced Programme Committee Member reviewing an abstract submission. You have already read the conference and CFP analysis provided below — use them to inform your scoring.
 
-    Score the submitted abstract (title + abstract) on:
-    - RELEVANCE to CFP themes (1-10)
-    - ORIGINALITY vs already-covered content (1-10)
-    - CLARITY of the proposal (1-10)
-    - SPEAKER CREDIBILITY signals (does it hint at real experience?) (1-10)
-    - COMMUNITY VALUE (will attendees walk away with something actionable?) (1-10)
+    Score the submitted abstract (title + abstract) on five dimensions, each 1-10:
+    - RELEVANCE to CFP themes
+    - ORIGINALITY vs already-covered content
+    - CLARITY of the proposal
+    - SPEAKER CREDIBILITY signals (does it hint at real experience?)
+    - COMMUNITY VALUE (will attendees walk away with something actionable?)
 
-    Then give:
-    - OVERALL COMMITTEE SCORE (weighted average, as a percentage likelihood of acceptance)
-    - TOP 3 REASONS it might get rejected
-    - TOP 3 SPECIFIC EDITS that would improve acceptance odds
+    Respond in Markdown using EXACTLY this structure. Do not use tables.
+
+    ## OVERALL COMMITTEE SCORE
+    **X%** likelihood of acceptance — one sentence explaining the weighting.
+
+    ## DIMENSION SCORES
+
+    ### Relevance to CFP themes — X/10
+    2-3 sentences of rationale.
+
+    ### Originality — X/10
+    2-3 sentences of rationale.
+
+    ### Clarity — X/10
+    2-3 sentences of rationale.
+
+    ### Speaker Credibility — X/10
+    2-3 sentences of rationale.
+
+    ### Community Value — X/10
+    2-3 sentences of rationale.
+
+    ## TOP 3 REJECTION RISKS
+    1. **Short label** — one or two sentences.
+    2. **Short label** — one or two sentences.
+    3. **Short label** — one or two sentences.
+
+    ## TOP 3 SPECIFIC EDITS
+    1. **Short label** — the concrete change to make and why it helps.
+    2. **Short label** — the concrete change to make and why it helps.
+    3. **Short label** — the concrete change to make and why it helps.
 
   audience: |
     You are a typical conference attendee — a practitioner in your field who is spending real money and precious days attending this event. You have read the conference overview provided below and know what this event is about. You're scanning the programme deciding which sessions to attend.

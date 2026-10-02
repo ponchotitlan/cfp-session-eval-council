@@ -99,14 +99,14 @@ const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", async () => {
-      let eventUrl;
+      let eventUrl, pastAgendaUrl;
       try {
-        ({ eventUrl } = JSON.parse(raw));
+        ({ eventUrl, pastAgendaUrl } = JSON.parse(raw));
       } catch {
         return json(400, { error: { message: "Invalid JSON body." } });
       }
       try {
-        json(200, await researchConference(eventUrl));
+        json(200, await researchConference(eventUrl, pastAgendaUrl));
       } catch (err) {
         // Retrieval is best-effort: report the failure as a normal negative
         // result so the caller falls back to asking the user.

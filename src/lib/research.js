@@ -11,17 +11,19 @@
  * user for examples.
  *
  * @param {string} eventUrl
+ * @param {string} [pastAgendaUrl] - Direct link to a past edition's agenda,
+ *   when the submitter already has it. Skips link-discovery for that source.
  * @returns {Promise<{ok: boolean, digest: string, sources: string[], reason: string|null, stats: object}>}
  */
-export async function fetchResearch(eventUrl) {
-  if (!eventUrl?.trim()) {
-    return { ok: false, digest: "", sources: [], reason: "no event URL was provided", stats: {} };
+export async function fetchResearch(eventUrl, pastAgendaUrl) {
+  if (!eventUrl?.trim() && !pastAgendaUrl?.trim()) {
+    return { ok: false, digest: "", sources: [], reason: "no event URL or past-agenda URL was provided", stats: {} };
   }
   try {
     const response = await fetch("/api/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ eventUrl: eventUrl.trim() }),
+      body: JSON.stringify({ eventUrl: eventUrl?.trim(), pastAgendaUrl: pastAgendaUrl?.trim() }),
     });
     const data = await response.json();
     if (!response.ok) {

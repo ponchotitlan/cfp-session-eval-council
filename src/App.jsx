@@ -20,6 +20,7 @@ import ConfigPanel, { GearIcon } from "./components/ConfigPanel";
 import Field from "./components/Field";
 import ScoreCard from "./components/ScoreCard";
 import AgentReport from "./components/AgentReport";
+import AgentPipelineDiagram from "./components/AgentPipelineDiagram";
 
 const APP_DEFAULT_CONFIG = { ...DEFAULT_CONFIG, model: DEFAULT_MODELS.anthropic };
 
@@ -85,6 +86,7 @@ export default function SessionEvaluator() {
   const [abstract, setAbstract] = useState("");
   const [eventUrl, setEventUrl] = useState("");
   const [cfpUrl, setCfpUrl] = useState("");
+  const [pastAgendaUrl, setPastAgendaUrl] = useState("");
   const [cfpText, setCfpText] = useState("");
   const [needsCfpText, setNeedsCfpText] = useState(false);
   // Deterministic programme retrieval, and the user's pasted fallback for it.
@@ -324,7 +326,7 @@ ${extraText.trim() ? `\nCALL FOR PAPERS TEXT:\n${extraText.trim()}` : ""}
         return buildAgentMessage(agentId, sessionContext, results);
       }
       if (researchResult === null) {
-        researchResult = await fetchResearch(eventUrl);
+        researchResult = await fetchResearch(eventUrl, pastAgendaUrl);
         setResearch(researchResult);
       }
       const retrieved = researchBlock({ research: researchResult, pastTalks });
@@ -519,25 +521,15 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
     <div className="app-root">
       {/* ── Header ── */}
       <div className="app-header">
-        <div className="header-logo">✏️</div>
         <div>
           <div className="header-brand-name">CFP SESSION EVALUATOR COUNCIL</div>
           <div className="header-brand-sub">MULTI-AGENT CONFERENCE CFP (CALL FOR PAPERS) SESSION EVALUATOR</div>
         </div>
         <div className="header-right">
-          <div className="agent-dots">
-            {AGENTS.map((a) => (
-              <div key={a.id} className="agent-dot" style={{
-                background: agentProgress.includes(a.id) || activeAgents.includes(a.id) ? a.color : "var(--border-main)",
-                boxShadow: activeAgents.includes(a.id) ? `0 0 8px ${a.color}` : "none",
-              }} />
-            ))}
-          </div>
           <button onClick={() => setConfigOpen(true)} title="Settings" aria-label="Settings" className="config-btn"
             style={{
-              background: config.apiKey ? "var(--bg-white)" : "#3A3010",
-              border: config.apiKey ? "1px solid var(--border-main)" : "1px solid #FFEA3C88",
-              boxShadow: config.apiKey ? "none" : "0 0 10px #FFEA3C44",
+              background: config.apiKey ? "var(--bg-white)" : "#FBEEDC",
+              border: config.apiKey ? "1px solid var(--border-main)" : "1px solid var(--color-warning)",
             }}
           >
             <GearIcon color={config.apiKey ? "var(--text-gray)" : "var(--color-warning)"} />
@@ -553,9 +545,11 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
               <h1 className="idle-title">
                 Will your session get accepted?
               </h1>
-              <p className="idle-subtitle">
-                You have something worth sharing. Conference organisers put real effort into curating sessions that serve their community. <strong>They deserve submissions that are clear, relevant, and well-argued.</strong> This tool helps you stress-test your abstract before you submit it. Not to game the process, but to make sure your idea comes across the way you intend it to.Your abstract is put in front of four AI agents, each reading it from a different angle: the person who wrote the call for papers, someone who knows the conference inside out, a programme committee reviewer, and a typical attendee. A fifth agent, the Synthesiser, reads all their outputs and gives you a consolidated report with rewrite suggestions.
+              <p className="idle-subtitle" style={{ borderLeftColor: "var(--highlight)" }}>
+                You have something worth sharing. Conference organisers put real effort into curating sessions that serve their community. <strong>They deserve submissions that are clear, relevant, and well-argued.</strong> This tool helps you stress-test your abstract before you submit it. Not to game the process, but to make sure your idea comes across the way you intend it to.
               </p>
+
+              <AgentPipelineDiagram />
             </div>
 
             {error && <div className="error-banner">{error}</div>}
@@ -580,7 +574,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                 />
               </Field>
 
-              <div className="form-row-2col">
+              <div className="form-row-3col">
                 <Field label="EVENT URL" hint="Conference homepage">
                   <input
                     value={eventUrl}
@@ -597,22 +591,14 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
                     className="input"
                   />
                 </Field>
-              </div>
-
-              <div className="agents-section">
-                <div className="section-label">ACTIVE AGENTS</div>
-                <div className="agents-grid">
-                  {AGENTS.map((a) => (
-                    <div key={a.id} className="agent-card-idle"
-                      style={{ border: `1px solid ${a.color}22` }}>
-                      <span className="agent-card-idle-icon">{a.icon}</span>
-                      <div>
-                        <div className="agent-card-idle-name" style={{ color: a.color }}>{a.label}</div>
-                        <div className="agent-card-idle-desc">{a.desc}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <Field label="PAST AGENDA URL" hint="A past edition's programme">
+                  <input
+                    value={pastAgendaUrl}
+                    onChange={(e) => setPastAgendaUrl(e.target.value)}
+                    placeholder="https://event.com/2025/agenda"
+                    className="input"
+                  />
+                </Field>
               </div>
 
               <button onClick={runEvaluation} className="submit-btn">
@@ -641,8 +627,7 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
               {countdown > 0 && (
                 <div className="countdown-wrapper">
                   <div className="countdown-label">{countdownLabel}</div>
-                  <div className="countdown-number"
-                    style={{ color: countdown <= 5 ? "var(--color-success)" : "var(--color-warning)" }}>
+                  <div className="countdown-number">
                     {countdown}s
                   </div>
                   <div className="countdown-bar-track">
@@ -723,58 +708,61 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
             )}
 
             <div className="agent-list">
-              {AGENTS.map((a) => {
+              {AGENTS.map((a, i) => {
                 const isDone   = agentProgress.includes(a.id);
                 const isActive = activeAgents.includes(a.id);
                 return (
-                  <div key={a.id} className="agent-progress-card" style={{
-                    border: `1px solid ${isDone ? a.color + "55" : isActive ? a.color : "var(--border-main)"}`,
-                  }}>
-                    <div className="agent-progress-row"
-                      style={{ marginBottom: isDone && agentResults[a.id] ? 12 : 0 }}>
-                      <span className="agent-progress-icon">{a.icon}</span>
-                      <div className="agent-progress-info">
-                        <div className="agent-progress-name"
-                          style={{ color: isDone ? a.color : isActive ? a.color : "var(--text-gray)" }}>
-                          {a.label}
+                  <div key={a.id} className={`agent-progress-row-item${isActive ? " is-active" : ""}`}
+                    style={{ "--glow-color": a.color }}>
+                    <div className="agent-progress-row-item-inner">
+                      <div className="agent-progress-row"
+                        style={{ marginBottom: isDone && agentResults[a.id] ? 12 : 0 }}>
+                        <span className="agent-progress-number">{String(i + 1).padStart(2, "0")}</span>
+                        <span className="agent-progress-icon">{a.icon}</span>
+                        <div className="agent-progress-info">
+                          <div className="agent-progress-name"
+                            style={{ color: isDone ? a.color : isActive ? a.color : "var(--text-gray)" }}>
+                            {a.label}
+                          </div>
+                          <div className="agent-progress-desc">
+                            {isActive ? a.desc : isDone ? "Complete" : "Waiting..."}
+                          </div>
                         </div>
-                        <div className="agent-progress-desc">
-                          {isActive ? a.desc : isDone ? "Complete" : "Waiting..."}
+                        <div className="agent-progress-status" style={{
+                          background:  isDone ? a.color : "transparent",
+                          border:      isDone ? "none" : isActive ? `2px solid ${a.color}` : "2px solid var(--border-main)",
+                          animation:   isActive ? "spin 1s linear infinite" : "none",
+                        }}>
+                          {isDone ? "✓" : isActive ? "◌" : ""}
                         </div>
                       </div>
-                      <div className="agent-progress-status" style={{
-                        background:  isDone ? a.color : "transparent",
-                        border:      isDone ? "none" : isActive ? `2px solid ${a.color}` : "2px solid var(--border-main)",
-                        animation:   isActive ? "spin 1s linear infinite" : "none",
-                      }}>
-                        {isDone ? "✓" : isActive ? "◌" : ""}
-                      </div>
+                      {isDone && agentResults[a.id] && (
+                        <div className="agent-progress-preview">
+                          {agentResults[a.id]}
+                        </div>
+                      )}
                     </div>
-                    {isDone && agentResults[a.id] && (
-                      <div className="agent-progress-preview"
-                        style={{ borderTop: `1px solid ${a.color}22` }}>
-                        {agentResults[a.id]}
-                      </div>
-                    )}
                   </div>
                 );
               })}
 
               {/* Synthesis indicator */}
-              <div className="synthesis-card" style={{
-                border: `1px solid ${activeAgents.includes("synthesis") ? "var(--color-warning)" : "var(--border-main)"}`,
-              }}>
-                <div className="synthesis-card-inner">
-                  <span className="synthesis-icon">🧠</span>
-                  <div>
-                    <div className="synthesis-title"
-                      style={{ color: activeAgents.includes("synthesis") ? "var(--color-warning)" : "var(--text-gray)" }}>
-                      Master Synthesiser
-                    </div>
-                    <div className="synthesis-desc">
-                      {activeAgents.includes("synthesis")
-                        ? "Compiling final report and rewrite suggestions..."
-                        : "Waiting for all agents..."}
+              <div className={`agent-progress-row-item${activeAgents.includes("synthesis") ? " is-active" : ""}`}
+                style={{ "--glow-color": "var(--color-warning)" }}>
+                <div className="agent-progress-row-item-inner">
+                  <div className="agent-progress-row">
+                    <span className="agent-progress-number">{String(AGENTS.length + 1).padStart(2, "0")}</span>
+                    <span className="agent-progress-icon">🧠</span>
+                    <div className="agent-progress-info">
+                      <div className="agent-progress-name"
+                        style={{ color: activeAgents.includes("synthesis") ? "var(--color-warning)" : "var(--text-gray)" }}>
+                        Master Synthesiser
+                      </div>
+                      <div className="agent-progress-desc">
+                        {activeAgents.includes("synthesis")
+                          ? "Compiling final report and rewrite suggestions..."
+                          : "Waiting for all agents..."}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -787,9 +775,8 @@ ${evaluations.map(([label, text]) => `${label}:\n${truncate(text)}`).join("\n\n-
         {phase === "done" && (
           <div ref={resultsRef}>
             <div className="scores-grid">
-              {/* Literal hex, not var(): ScoreCard concatenates alpha suffixes onto `color`. */}
-              <ScoreCard label="ACCEPTANCE LIKELIHOOD" score={acceptanceScore} color="#5FD97A" icon="🎯" />
-              <ScoreCard label="AUDIENCE APPEAL"        score={audienceScore}   color="#5BB0FC" icon="🙋" />
+              <ScoreCard label="ACCEPTANCE LIKELIHOOD" score={acceptanceScore} color="#1E7A46" icon="🎯" />
+              <ScoreCard label="AUDIENCE APPEAL"        score={audienceScore}   color="#0F6C8C" icon="🙋" />
             </div>
 
             <div className="agent-reports-section">
